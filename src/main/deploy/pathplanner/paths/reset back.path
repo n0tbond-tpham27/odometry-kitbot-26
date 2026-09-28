@@ -1,0 +1,54 @@
+{
+  "version": "2025.0",
+  "waypoints": [
+    {
+      "anchor": {
+        "x": 2.5608497723823973,
+        "y": 4.101540212443095
+      },
+      "prevControl": null,
+      "nextControl": {
+        "x": 3.560849772382397,
+        "y": 4.101540212443095
+      },
+      "isLocked": false,
+      "linkedName": "End Auton"
+    },
+    {
+      "anchor": {
+        "x": 3.42587253414264,
+        "y": 4.101540212443095
+      },
+      "prevControl": {
+        "x": 2.42587253414264,
+        "y": 4.101540212443095
+      },
+      "nextControl": null,
+      "isLocked": false,
+      "linkedName": "Hopper Center"
+    }
+  ],
+  "rotationTargets": [],
+  "constraintZones": [],
+  "pointTowardsZones": [],
+  "eventMarkers": [],
+  "globalConstraints": {
+    "maxVelocity": 1.8,
+    "maxAcceleration": 4.5,
+    "maxAngularVelocity": 360,
+    "maxAngularAcceleration": 720,
+    "nominalVoltage": 12,
+    "unlimited": false
+  },
+  "goalEndState": {
+    "velocity": 0,
+    "rotation": 0
+  },
+  "reversed": true,
+  "folder": null,
+  "idealStartingState": {
+    "velocity": 0,
+    "rotation": 0
+  },
+  "useDefaultConstraints": true
+}

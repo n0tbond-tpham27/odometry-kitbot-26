@@ -49,7 +49,10 @@ public class Robot extends TimedRobot {
   public void disabledInit() {}
 
   @Override
-  public void disabledPeriodic() {}
+  public void disabledPeriodic() {
+    // Keep the field view's "Auto Start" ghost in sync with whichever auto is selected
+    m_robotContainer.updateAutoStartPreview();
+  }
 
   /** This autonomous runs the autonomous command selected by your {@link RobotContainer} class. */
   @Override

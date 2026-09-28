@@ -4,6 +4,8 @@
 
 package frc.robot.subsystems;
 
+import java.util.function.DoubleSupplier;
+
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.VoltageOut;
 import com.ctre.phoenix6.hardware.TalonFX;
@@ -58,12 +60,26 @@ public class Flywheel extends SubsystemBase {
      * @param shooterSpeed The commanded shooter wheel speed in rotations per second
      */
     public Command runShooterCommand() {
-        // Run shooter wheel at the current speed using a PID controller and feedforward.
+        return runShooterCommand(() -> m_currentFlywheelTargetRPM);
+    }
+
+    /**
+     * Returns a command that runs the shooter at a fixed speed, without changing the adjustable
+     * target used by {@link #runShooterCommand()}.
+     *
+     * @param targetRPM The commanded shooter wheel speed in RPM
+     */
+    public Command runShooterCommand(double targetRPM) {
+        return runShooterCommand(() -> targetRPM);
+    }
+
+    private Command runShooterCommand(DoubleSupplier targetRPM) {
+        // Run shooter wheel at the target speed using a PID controller and feedforward.
         return run(() -> {
+            double targetRPS = targetRPM.getAsDouble() / 60.0;
             m_flywheelMotor.setControl(m_voltageRequest.withOutput(
-                m_shooterFeedback.calculate(m_flywheelEncoder.getVelocity().getValueAsDouble(), 
-                                           m_currentFlywheelTargetRPM / 60.0)
-                    + m_shooterFeedforward.calculate(m_currentFlywheelTargetRPM / 60.0)));
+                m_shooterFeedback.calculate(m_flywheelEncoder.getVelocity().getValueAsDouble(), targetRPS)
+                    + m_shooterFeedforward.calculate(targetRPS)));
         })
         .finallyDo(
             () -> {
@@ -112,6 +128,14 @@ public class Flywheel extends SubsystemBase {
     @Override
     public void simulationPeriodic() {
     // This method will be called once per scheduler run during simulation
+    }
+
+    /**
+     * Returns true once the flywheel is spinning at least {@code kFlywheelAtSpeedFraction} of
+     * {@code targetRPM}, i.e. fast enough to feed a game piece into.
+     */
+    public boolean isAtSpeed(double targetRPM) {
+        return getShooterSpeedRPM() >= targetRPM * kFlywheelAtSpeedFraction;
     }
 
     // ======= Logging Methods ========
