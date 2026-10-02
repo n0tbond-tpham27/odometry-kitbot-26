@@ -48,7 +48,7 @@ public final class Constants {
          * kEncoderDistanceCalibration below. Changing this alone will not change measured distance.
          */
         public static final double kDriveGearRatio = 10.71; //10.71;
-        /**
+        /**       
          * Correction applied to the distance the encoder reports, for whatever the wheel-size
          * number alone doesn't capture (tread wear, an encoder not exactly 1:1 with the wheel).
          * 1.0 means one encoder rotation is exactly one wheel circumference.
@@ -208,6 +208,26 @@ public final class Constants {
 
     public static class AutoConstants {
         public static final double kDistanceTargetMeters = 2.0;
+
+        // "Drive 3 m" auto (DriveSubsystem.driveDistanceCommand): speeds up, cruises, and slows to
+        // a stop on the target instead of cutting the motors there and coasting past it.
+        /** How far the "Drive 3 m" auto drives straight forward (meters). */
+        public static final double kDriveStraightDistanceMeters = 3.0;
+        /**
+         * Top speed for the drive-distance auto (m/s). Kept low so the wheels don't spin or skid,
+         * which would make the encoder count distance the robot didn't actually travel.
+         */
+        public static final double kDriveStraightMaxSpeedMetersPerSecond = 1.0;
+        /** How quickly the drive-distance auto speeds up and slows down (m/s^2); gentle for the same reason. */
+        public static final double kDriveStraightMaxAccelMetersPerSecondSq = 1.0;
+        /** Extra speed (m/s) added per meter the robot is behind where it should be by now. */
+        public static final double kDriveStraightDistanceP = 2.0;
+        /** Turn rate (rad/s) per radian the robot has turned away from its starting heading. */
+        public static final double kDriveStraightHeadingP = 2.0;
+        /** The drive-distance auto finishes once the robot is within this distance of the target (meters)... */
+        public static final double kDriveStraightToleranceMeters = 0.02;
+        /** ...and moving slower than this (m/s), so it doesn't end while still rolling. */
+        public static final double kDriveStraightSpeedToleranceMetersPerSecond = 0.05;
 
         /** Loop period (seconds) used by PathPlanner's LTV differential drive controller. */
         public static final double kLTVDtSeconds = RobotConstants.kRobotLoopPeriod;

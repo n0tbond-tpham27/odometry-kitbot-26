@@ -4,7 +4,7 @@
 
 package frc.robot.subsystems;
 
-import static frc.robot.Constants.AutoConstants.kLTVDtSeconds;
+import static frc.robot.Constants.AutoConstants.*;
 import static frc.robot.Constants.DriveConstants.*;
 import static frc.robot.Constants.OdometryConstants.*;
 import static frc.robot.Constants.RobotConstants.*;
@@ -24,6 +24,7 @@ import com.pathplanner.lib.controllers.PPLTVController;
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.controller.PIDController;
+import edu.wpi.first.math.controller.ProfiledPIDController;
 import edu.wpi.first.math.controller.SimpleMotorFeedforward;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
@@ -31,6 +32,7 @@ import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.kinematics.DifferentialDriveKinematics;
 import edu.wpi.first.math.kinematics.DifferentialDriveOdometry;
 import edu.wpi.first.math.kinematics.DifferentialDriveWheelSpeeds;
+import edu.wpi.first.math.trajectory.TrapezoidProfile;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.DriverStation.Alliance;
 import edu.wpi.first.wpilibj.RobotController;
@@ -353,6 +355,48 @@ public class DriveSubsystem extends SubsystemBase {
                 }
             })
             .withName("Find Track Width");
+    }
+
+    /**
+     * Drives straight forward {@code meters} and stops on it: speeds up gently, cruises, then
+     * slows to a stop at the target (a trapezoid profile), with feedback on distance so it ends
+     * stopped within kDriveStraightToleranceMeters. Distance is measured along the way the robot faced at
+     * the start — the same number as "Measure/Forward (m)", which this resets — and the gyro holds
+     * that heading.
+     *
+     * <p>It stops where odometry says {@code meters} is, so if kEncoderDistanceCalibration is off,
+     * the real distance will be off by the same ratio. That makes it a calibration check: tape-measure
+     * where it stopped and compare against Measure/Forward.
+     */
+    public Command driveDistanceCommand(double meters) {
+        ProfiledPIDController distanceController = new ProfiledPIDController(
+            kDriveStraightDistanceP, 0.0, 0.0,
+            new TrapezoidProfile.Constraints(
+                kDriveStraightMaxSpeedMetersPerSecond, kDriveStraightMaxAccelMetersPerSecondSq));
+        distanceController.setTolerance(
+            kDriveStraightToleranceMeters, kDriveStraightSpeedToleranceMetersPerSecond);
+
+        // Longest the profile can take (cruise time plus speeding up and slowing down), plus a
+        // couple of seconds to settle; gives up if something keeps the robot from getting there.
+        double timeoutSeconds = Math.abs(meters) / kDriveStraightMaxSpeedMetersPerSecond
+            + kDriveStraightMaxSpeedMetersPerSecond / kDriveStraightMaxAccelMetersPerSecondSq + 2.0;
+
+        return runOnce(() -> {
+                markMeasurement(); // measure from here, and show the result under Measure/
+                distanceController.reset(0.0);
+            })
+            .andThen(run(() -> {
+                double travelledMeters = getPose().relativeTo(m_markPose).getX();
+                // Follow the profile's speed, plus a correction for being behind or ahead of it
+                double forwardSpeed = distanceController.calculate(travelledMeters, meters)
+                    + distanceController.getSetpoint().velocity;
+                double turnRate = kDriveStraightHeadingP
+                    * Math.toRadians(m_markGyroDegrees - getHeadingDegrees());
+                driveRobotRelative(new ChassisSpeeds(forwardSpeed, 0.0, turnRate));
+            }).until(distanceController::atGoal))
+            .withTimeout(timeoutSeconds)
+            .finallyDo(() -> stopMotors())
+            .withName("Drive Distance");
     }
 
     /**

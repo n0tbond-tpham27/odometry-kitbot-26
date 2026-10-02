@@ -4,6 +4,7 @@
 
 package frc.robot;
 
+import frc.robot.Constants.AutoConstants;
 import frc.robot.Constants.IOConstants;
 import frc.robot.Constants.OperatorConstants;
 import frc.robot.commands.Autos;
@@ -63,6 +64,8 @@ public class RobotContainer {
         // Lists every auto in deploy/pathplanner/autos, plus our non-PathPlanner routine
         m_autoChooser = AutoBuilder.buildAutoChooser();
         m_autoChooser.addOption("Drive Distance (no path)", Autos.driveDistance(m_driveSubsystem));
+        m_autoChooser.addOption("Drive " + AutoConstants.kDriveStraightDistanceMeters + " m",
+            m_driveSubsystem.driveDistanceCommand(AutoConstants.kDriveStraightDistanceMeters));
         SmartDashboard.putData("Auto Chooser", m_autoChooser);
 
         // Configure the trigger bindings
