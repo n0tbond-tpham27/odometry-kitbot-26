@@ -47,7 +47,7 @@ public final class Constants {
          * the CANcoder is on the wheel shaft, so distance depends only on wheel size and
          * kEncoderDistanceCalibration below. Changing this alone will not change measured distance.
          */
-        public static final double kDriveGearRatio = 10.71; //10.71;
+        public static final double kDriveGearRatio = 8.45; //10.71 was old value
         /**       
          * Correction applied to the distance the encoder reports, for whatever the wheel-size
          * number alone doesn't capture (tread wear, an encoder not exactly 1:1 with the wheel).
