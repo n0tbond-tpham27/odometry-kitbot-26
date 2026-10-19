@@ -67,8 +67,12 @@ public final class Constants {
          * i.e. 23% too far, so 1.15 * (2.84 / 3.50) = 0.9331. That works out to 0.4556 m per
          * encoder rotation, an effective wheel diameter of 0.145 m (5.71 in) rather than the
          * nominal 6 in — about what worn tread on a 6 in wheel measures.
+         *
+         * <p>Re-measured 2026-10-19 at 0.9331: moving the robot exactly 2.00 m reported 1.93 m,
+         * i.e. 3.5% short, so 0.9331 * (2.00 / 1.93) = 0.9669. That is 0.4721 m per encoder
+         * rotation, an effective wheel diameter of 0.1503 m (5.92 in).
          */
-        public static final double kEncoderDistanceCalibration = 0.9331;
+        public static final double kEncoderDistanceCalibration = 0.9669;
         public static final double kDistancePerRotationMeters =
             Math.PI * kWheelDiameterMeters * kEncoderDistanceCalibration; // encoder directly on wheel shaft
         
@@ -119,12 +123,38 @@ public final class Constants {
         // Field coordinates: (0, 0) is the bottom-left corner of the field, +X points away from
         // the blue alliance wall, +Y points left, and heading is CCW-positive (0 deg = facing +X).
 
-        /** Starting X position of the robot on the field (meters). */
-        public static final double kStartingXMeters = 2.0;
-        /** Starting Y position of the robot on the field (meters). */
-        public static final double kStartingYMeters = 4.0;
+        /** Bumper-to-bumper robot length, front to back (meters), measured on the real robot. */
+        public static final double kRobotLengthMeters = 0.83;
+        /**
+         * X of the hub's face toward the blue alliance wall (meters), from WPILib's 2026 AprilTag
+         * layout (tags 25/26). The hub is centered at Y = 4.035.
+         */
+        public static final double kHubNearFaceXMeters = 4.022;
+        /** Hub center Y (meters), halfway between its side tags. */
+        public static final double kHubCenterYMeters = 4.035;
+        /** Gap from the robot's front bumper to the hub face at the starting spot (meters). */
+        public static final double kStartingGapToHubMeters = 2.0;
+
+        /**
+         * Starting X position of the robot's CENTER on the field (meters): front bumper
+         * kStartingGapToHubMeters short of the hub face, so 4.022 - 2.0 - 0.415 = 1.607.
+         */
+        public static final double kStartingXMeters =
+            kHubNearFaceXMeters - kStartingGapToHubMeters - kRobotLengthMeters / 2.0;
+        /** Starting Y position of the robot's center (meters): lined up with the hub's center. */
+        public static final double kStartingYMeters = kHubCenterYMeters;
         /** Starting heading of the robot on the field (degrees, CCW-positive). */
         public static final double kStartingHeadingDegrees = 0.0;
+
+        // Pose the Back button puts the robot at: PathPlanner's linked waypoint "Hopper Center"
+        // (start of the "hopper front test" paths, end of "reset back"). If that waypoint is
+        // moved in the PathPlanner GUI, copy its new X/Y here.
+        /** X position of the "Hopper Center" waypoint (meters, blue side). */
+        public static final double kHopperCenterXMeters = 3.42587253414264;
+        /** Y position of the "Hopper Center" waypoint (meters, blue side). */
+        public static final double kHopperCenterYMeters = 4.101540212443095;
+        /** Heading at "Hopper Center": front facing directly away from the hopper, toward the alliance wall. */
+        public static final double kHopperCenterHeadingDegrees = 180.0;
     }
 
     public static class IOConstants {

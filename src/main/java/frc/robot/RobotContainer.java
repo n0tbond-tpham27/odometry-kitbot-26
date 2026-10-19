@@ -115,8 +115,9 @@ public class RobotContainer {
         // Put the robot back at the starting pose (line it up on the field first)
         m_driverController.start().onTrue(m_driveSubsystem.resetOdometryCommand());
 
-        // Zero the drive encoders — used when calibrating distance against a tape measure
-        m_driverController.back().onTrue(m_driveSubsystem.resetEncoderCommand());
+        // Zero the drive encoders and put the robot at PathPlanner's "Hopper Center" waypoint,
+        // front facing directly away from the hopper (line it up there on the field first)
+        m_driverController.back().onTrue(m_driveSubsystem.resetToHopperCenterCommand());
     }
 
     /**

@@ -20,6 +20,7 @@ import com.revrobotics.spark.SparkLowLevel.MotorType;
 import com.pathplanner.lib.auto.AutoBuilder;
 import com.pathplanner.lib.config.RobotConfig;
 import com.pathplanner.lib.controllers.PPLTVController;
+import com.pathplanner.lib.util.FlippingUtil;
 
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.math.MathUtil;
@@ -245,6 +246,19 @@ public class DriveSubsystem extends SubsystemBase {
         return runOnce( () -> this.resetEncoders() );
     }
 
+    /**
+     * Zeros the encoders and puts the robot at PathPlanner's "Hopper Center" waypoint, facing
+     * directly away from the hopper (mirrored to the red side when on red, like the paths are).
+     */
+    public Command resetToHopperCenterCommand() {
+        return runOnce( () -> {
+                this.resetEncoders();
+                this.resetOdometry(getHopperCenterPose());
+            })
+            .ignoringDisable(true)
+            .withName("resetToHopperCenter");
+    }
+
     /** Resets odometry so the robot is at the configured starting pose. */
     public Command resetOdometryCommand() {
         return runOnce( () -> this.resetOdometry(getStartingPose()) )
@@ -305,6 +319,13 @@ public class DriveSubsystem extends SubsystemBase {
     public static Pose2d getStartingPose() {
         return new Pose2d(kStartingXMeters, kStartingYMeters,
             Rotation2d.fromDegrees(kStartingHeadingDegrees));
+    }
+
+    /** Returns the "Hopper Center" pose from {@code OdometryConstants}, flipped to the red side when on red. */
+    public static Pose2d getHopperCenterPose() {
+        Pose2d pose = new Pose2d(kHopperCenterXMeters, kHopperCenterYMeters,
+            Rotation2d.fromDegrees(kHopperCenterHeadingDegrees));
+        return AutoBuilder.shouldFlip() ? FlippingUtil.flipFieldPose(pose) : pose;
     }
 
     /**
