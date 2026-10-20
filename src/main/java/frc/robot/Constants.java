@@ -95,6 +95,18 @@ public final class Constants {
          */
         public static final double kTrackWidthSpinVolts = 3.0;
 
+        // Shooting agitation: keep every target ahead of where shooting started so the robot
+        // moves away from the hopper first, and never targets a position behind that start.
+        public static final double kShootWiggleForwardMeters = 0.03;
+        public static final double kShootWiggleReturnMeters = 0.01;
+        public static final double kShootWiggleMaxSpeedMetersPerSecond = 0.12;
+        /** Each direction gets 0.30 s of motion followed by 0.20 s of rest. */
+        public static final double kShootWiggleIntervalSeconds = 0.50;
+        public static final double kShootWiggleMoveSeconds = 0.30;
+        public static final double kShootWigglePositionP = 6.0;
+        public static final double kShootWiggleHeadingP = 2.0;
+        public static final double kShootWiggleMaxTurnRateRadPerSec = 0.20;
+
         // feedforward gains determined from SysId
         public static final double kDriveBase_kS = 1.008;
         public static final double kDriveBase_kV = 2.575;
@@ -155,6 +167,46 @@ public final class Constants {
         public static final double kHopperCenterYMeters = 4.101540212443095;
         /** Heading at "Hopper Center": front facing directly away from the hopper, toward the alliance wall. */
         public static final double kHopperCenterHeadingDegrees = 180.0;
+    }
+
+    public static class VisionConstants {
+        /** Name of the Limelight, as set in its web interface (default "limelight"). */
+        public static final String kLimelightName = "limelight";
+        /**
+         * How much to trust a vision position, as a standard deviation (meters): bigger means
+         * trust it less and move the pose toward it more gently. 0.7 is Limelight's suggested
+         * value for MegaTag2; the wheel odometry's own default is 0.02.
+         */
+        public static final double kVisionXYStdDevMeters = 0.7;
+        /**
+         * Ignore vision while the robot turns faster than this (deg/s): MegaTag2 relies on the
+         * heading we send it, which lags slightly during fast turns and smears the position.
+         */
+        public static final double kMaxYawRateDegreesPerSecond = 720.0;
+        /** Ignore results whose tags are farther than this on average (meters); far tags are noisy. */
+        public static final double kMaxTagDistanceMeters = 4.0;
+        /**
+         * Ignore vision positions farther than this from where odometry thinks the robot is
+         * (meters). Real drift over an auto is well under this, so anything bigger means the
+         * vision is wrong (wrong tag IDs or field map, bad camera pose), not the odometry.
+         */
+        public static final double kMaxVisionJumpMeters = 1.0;
+        /**
+         * The auto's "visionAlign" step averages this many accepted vision frames before snapping
+         * the pose to them (about 0.17 s at the Limelight's 30 fps)...
+         */
+        public static final int kVisionResetFrames = 5;
+        /** ...and still snaps with at least this many if it times out... */
+        public static final int kVisionResetMinFrames = 3;
+        /** ...after this long (seconds). With fewer frames (tags not in view) it leaves the pose alone. */
+        public static final double kVisionResetTimeoutSeconds = 0.5;
+        /** Reject old camera frames, including the last frame left behind after a disconnect. */
+        public static final double kMaxVisionAgeSeconds = 0.3;
+        /** Allow a small timestamp skew between NetworkTables and the FPGA clock. */
+        public static final double kVisionFutureToleranceSeconds = 0.05;
+        /** Field size (meters), from WPILib's 2026 AprilTag layout; vision positions outside it are rejected. */
+        public static final double kFieldLengthMeters = 16.541;
+        public static final double kFieldWidthMeters = 8.069;
     }
 
     public static class IOConstants {
@@ -258,6 +310,21 @@ public final class Constants {
         public static final double kDriveStraightToleranceMeters = 0.02;
         /** ...and moving slower than this (m/s), so it doesn't end while still rolling. */
         public static final double kDriveStraightSpeedToleranceMetersPerSecond = 0.05;
+
+        /** Maximum X/Y distance from Hopper Center when alignment finishes (meters). */
+        public static final double kHopperAlignToleranceMeters = 0.03;
+        /** Final facing direction and initial turn must be within this angle (radians). */
+        public static final double kHopperAlignHeadingToleranceRadians = Math.toRadians(2.0);
+        /** Slow corrections near the hopper, using forward or reverse as needed. */
+        public static final double kHopperAlignMaxSpeedMetersPerSecond = 0.4;
+        public static final double kHopperAlignMaxTurnRateRadPerSec = 1.0;
+        public static final double kHopperAlignPositionP = 1.5;
+        public static final double kHopperAlignHeadingP = 3.0;
+        /** Stop translating and turn again if a new vision correction changes the bearing this far. */
+        public static final double kHopperAlignReorientRadians = Math.toRadians(45.0);
+        public static final double kHopperAlignTurnSpeedToleranceRadPerSec = 0.1;
+        /** Bound the whole correction, including turns and settling, if the robot cannot reach the spot. */
+        public static final double kHopperAlignTimeoutSeconds = 10.0;
 
         /** Loop period (seconds) used by PathPlanner's LTV differential drive controller. */
         public static final double kLTVDtSeconds = RobotConstants.kRobotLoopPeriod;

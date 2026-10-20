@@ -8,7 +8,10 @@ import static frc.robot.Constants.AutoConstants.*;
 import static frc.robot.Constants.DriveConstants.*;
 import static frc.robot.Constants.OdometryConstants.*;
 import static frc.robot.Constants.RobotConstants.*;
+import static frc.robot.Constants.VisionConstants.*;
 
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.DoubleSupplier;
 
 import com.revrobotics.spark.SparkMax;
@@ -24,19 +27,22 @@ import com.pathplanner.lib.util.FlippingUtil;
 
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.math.MathUtil;
+import edu.wpi.first.math.VecBuilder;
 import edu.wpi.first.math.controller.PIDController;
 import edu.wpi.first.math.controller.ProfiledPIDController;
 import edu.wpi.first.math.controller.SimpleMotorFeedforward;
+import edu.wpi.first.math.estimator.DifferentialDrivePoseEstimator;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.kinematics.DifferentialDriveKinematics;
-import edu.wpi.first.math.kinematics.DifferentialDriveOdometry;
 import edu.wpi.first.math.kinematics.DifferentialDriveWheelSpeeds;
 import edu.wpi.first.math.trajectory.TrapezoidProfile;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.DriverStation.Alliance;
 import edu.wpi.first.wpilibj.RobotController;
+import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.drive.DifferentialDrive;
 import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim;
 import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim.KitbotGearing;
@@ -45,6 +51,8 @@ import edu.wpi.first.wpilibj.simulation.DifferentialDrivetrainSim.KitbotWheelSiz
 import edu.wpi.first.wpilibj.smartdashboard.Field2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
+import edu.wpi.first.wpilibj2.command.FunctionalCommand;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 
 import com.ctre.phoenix6.configs.MagnetSensorConfigs;
@@ -53,6 +61,11 @@ import com.ctre.phoenix6.hardware.Pigeon2;
 import com.ctre.phoenix6.signals.SensorDirectionValue;
 import com.ctre.phoenix6.sim.CANcoderSimState;
 import com.ctre.phoenix6.sim.Pigeon2SimState;
+
+import frc.robot.vision.Limelight;
+import frc.robot.vision.Limelight.PoseMeasurement;
+import frc.robot.vision.HopperAlignmentController;
+import frc.robot.commands.ShootingWiggleController;
 
 @Logged(strategy = Logged.Strategy.OPT_IN)
 public class DriveSubsystem extends SubsystemBase {
@@ -75,8 +88,21 @@ public class DriveSubsystem extends SubsystemBase {
     // --- Odometry ---
     private final DifferentialDriveKinematics m_kinematics =
         new DifferentialDriveKinematics(kDriveTrackWidthMeters);
-    private final DifferentialDriveOdometry m_odometry;
+    /**
+     * Wheel odometry (encoder + gyro) every loop, corrected toward the Limelight's AprilTag
+     * position whenever it sees a tag, so error doesn't keep building up over an auto.
+     */
+    private final DifferentialDrivePoseEstimator m_poseEstimator;
     private double m_virtualLeftEncoderReading; // use to simulate left encoder
+
+    // --- Vision ---
+    private final Limelight m_limelight = new Limelight(kLimelightName);
+    /** Most recent vision position that passed the checks in updateVision()... */
+    private Pose2d m_lastAcceptedVisionPose = null;
+    /** ...and when it was accepted (FPGA seconds). */
+    private double m_lastAcceptedVisionTime = Double.NEGATIVE_INFINITY;
+    /** Only a completed, fresh vision reset authorizes the following hopper correction. */
+    private boolean m_visionResetSucceeded = false;
     /** Gyro heading (radians) at the last encoder reset; the virtual left encoder is measured from here. */
     private double m_headingAtResetRadians = 0.0;
     /** Raw encoder reading at the last reset; subtracted out so distances start from zero. */
@@ -162,13 +188,15 @@ public class DriveSubsystem extends SubsystemBase {
         m_virtualLeftEncoderReading = 0.0;
         // Start odometry at the configured starting pose ((0,0) is the bottom-left corner of the
         // field), with both wheel distances measured from the offsets just taken.
-        m_odometry = new DifferentialDriveOdometry(
-            getHeadingRotation2d(), 0.0, 0.0, getStartingPose());
+        m_poseEstimator = new DifferentialDrivePoseEstimator(
+            m_kinematics, getHeadingRotation2d(), 0.0, 0.0, getStartingPose());
 
         // initialize differential drive object
         m_differentialDrive = new DifferentialDrive(m_leftLeader, m_rightLeader);
 
         SmartDashboard.putData("Field", m_field);
+        // Turn off to see pure wheel odometry, e.g. for the tape-measure calibration tests
+        SmartDashboard.putBoolean("Vision/Enabled", true);
 
         // Compass dials for Elastic/Shuffleboard's Gyro widget, updated every loop by our own code
         // (a generic LiveWindow gyro widget only updates in Test mode, so it looks frozen otherwise).
@@ -242,6 +270,36 @@ public class DriveSubsystem extends SubsystemBase {
         return runOnce( () -> this.stopMotors() );
     }
 
+    /**
+     * Tiny forward/back pulses while feeding the shooter. Forward is away from the hopper
+     * when backed up against it. Encoder travel uses a fixed start for the whole shot, so
+     * repeated pulses do not accumulate drift or react to Limelight position corrections.
+     * Owns the drivetrain until interrupted; always stops on release or timeout.
+     */
+    public Command shootingWiggleCommand() {
+        ShootingWiggleController controller = new ShootingWiggleController();
+        Timer timer = new Timer();
+        double[] startDistance = {0.0};
+        Rotation2d[] startHeading = {Rotation2d.kZero};
+        return new FunctionalCommand(
+            () -> {
+                stopMotors();
+                startDistance[0] = getAverageDistanceMeters();
+                startHeading[0] = getHeadingRotation2d();
+                timer.restart(); // every shot starts with the forward pulse
+            },
+            () -> driveRobotRelative(controller.calculate(timer.get(),
+                getAverageDistanceMeters() - startDistance[0],
+                startHeading[0].minus(getHeadingRotation2d()).getRadians())),
+            interrupted -> {
+                timer.stop();
+                stopMotors();
+            },
+            () -> false,
+            this)
+            .withName("Shooting Wiggle");
+    }
+
     public Command resetEncoderCommand() {
         return runOnce( () -> this.resetEncoders() );
     }
@@ -295,7 +353,7 @@ public class DriveSubsystem extends SubsystemBase {
     /** Returns the robot's estimated pose on the field (meters, CCW-positive heading). */
     @Logged
     public Pose2d getPose() {
-        return m_odometry.getPoseMeters();
+        return m_poseEstimator.getEstimatedPosition();
     }
 
     /**
@@ -333,7 +391,7 @@ public class DriveSubsystem extends SubsystemBase {
      * the odometry object records their current readings as the new baseline.
      */
     public void resetOdometry(Pose2d pose) {
-        m_odometry.resetPosition(
+        m_poseEstimator.resetPosition(
             getHeadingRotation2d(), getLeftDistanceMeters(), getRightDistanceMeters(), pose);
         markMeasurement(); // the pose just jumped, so start measuring from the new one
     }
@@ -514,7 +572,7 @@ public class DriveSubsystem extends SubsystemBase {
         // baseline handed to odometry below can't disagree with what the next loop reads.
         m_rightEncoderOffsetRotations = m_rightEncoder.getPosition().getValueAsDouble();
         m_headingAtResetRadians = getHeadingRotation2d().getRadians();
-        m_odometry.resetPosition(getHeadingRotation2d(), 0.0, 0.0, getPose());
+        m_poseEstimator.resetPosition(getHeadingRotation2d(), 0.0, 0.0, getPose());
         markMeasurement(); // Back button = "start measuring from here"
     }
 
@@ -589,6 +647,153 @@ public class DriveSubsystem extends SubsystemBase {
 
    
 
+    /**
+     * Corrects the pose with the Limelight's AprilTag position, when it has a new one worth
+     * trusting. Each correction moves the pose part of the way toward the vision position (how far
+     * depends on kVisionXYStdDevMeters), so a single bad frame can't throw it far off.
+     */
+    private void updateVision() {
+        double yawRateDegreesPerSecond = m_pigeon2.getAngularVelocityZWorld().getValueAsDouble();
+        // MegaTag2 needs our field heading every loop, even while vision is switched off here
+        m_limelight.setRobotOrientation(getPose().getRotation().getDegrees(), yawRateDegreesPerSecond);
+
+        Optional<PoseMeasurement> measurement = m_limelight.getNewPose();
+        if (measurement.isEmpty()) {
+            return;
+        }
+        PoseMeasurement m = measurement.get();
+        m_field.getObject("Vision").setPose(m.pose());
+        SmartDashboard.putNumber("Vision/Tag Count", m.tagCount());
+        SmartDashboard.putString("Vision/Tag IDs", java.util.Arrays.toString(m.tagIds()));
+        SmartDashboard.putNumber("Vision/Avg Tag Distance (m)", m.avgTagDistanceMeters());
+        SmartDashboard.putNumber("Vision/X (m)", m.pose().getX());
+        SmartDashboard.putNumber("Vision/Y (m)", m.pose().getY());
+        // How far vision disagrees with the current pose; settles near 0 once vision has pulled it in
+        double disagreementMeters = m.pose().getTranslation().getDistance(getPose().getTranslation());
+        SmartDashboard.putNumber("Vision/Disagreement (m)", disagreementMeters);
+
+        String rejectReason = null;
+        double ageSeconds = Timer.getFPGATimestamp() - m.timestampSeconds();
+        if (!SmartDashboard.getBoolean("Vision/Enabled", true)) {
+            rejectReason = "disabled";
+        } else if (!Double.isFinite(m.pose().getX()) || !Double.isFinite(m.pose().getY())
+                || !Double.isFinite(m.pose().getRotation().getRadians())
+                || !Double.isFinite(m.timestampSeconds()) || !Double.isFinite(m.avgTagDistanceMeters())) {
+            rejectReason = "invalid measurement";
+        } else if (ageSeconds > kMaxVisionAgeSeconds || ageSeconds < -kVisionFutureToleranceSeconds) {
+            rejectReason = "stale timestamp";
+        } else if (Math.abs(yawRateDegreesPerSecond) > kMaxYawRateDegreesPerSecond) {
+            rejectReason = "turning too fast";
+        } else if (m.avgTagDistanceMeters() > kMaxTagDistanceMeters) {
+            rejectReason = "tags too far";
+        } else if (m.pose().getX() < 0 || m.pose().getX() > kFieldLengthMeters
+                || m.pose().getY() < 0 || m.pose().getY() > kFieldWidthMeters) {
+            rejectReason = "off the field";
+        } else if (disagreementMeters > kMaxVisionJumpMeters) {
+            rejectReason = "too far from odometry";
+        }
+        SmartDashboard.putString("Vision/Status", rejectReason == null ? "used" : "ignored: " + rejectReason);
+        if (rejectReason != null) {
+            return;
+        }
+
+        // MegaTag2's heading is just the one we sent it, so don't let it correct the heading
+        m_poseEstimator.addVisionMeasurement(m.pose(), m.timestampSeconds(),
+            VecBuilder.fill(kVisionXYStdDevMeters, kVisionXYStdDevMeters, 9999999));
+        m_lastAcceptedVisionPose = m.pose();
+        m_lastAcceptedVisionTime = Timer.getFPGATimestamp();
+    }
+
+    /**
+     * Holds still, averages the next few accepted vision positions, and snaps the pose's X/Y to
+     * that average (heading stays with the gyro). The gradual correction in updateVision() takes
+     * a second or two to fully catch up; this makes it immediate. If the tags aren't in view (or
+     * vision is switched off) it times out and leaves the pose alone.
+     */
+    public Command resetPoseToVisionCommand() {
+        Translation2d[] sum = {Translation2d.kZero};
+        int[] frames = {0};
+        double[] lastUsedTime = {0.0};
+        Timer timer = new Timer();
+        return new FunctionalCommand(
+            () -> {
+                m_visionResetSucceeded = false;
+                sum[0] = Translation2d.kZero;
+                frames[0] = 0;
+                lastUsedTime[0] = Timer.getFPGATimestamp(); // only frames from now on
+                timer.restart();
+            },
+            () -> {
+                stopMotors();
+                ChassisSpeeds speeds = getRobotRelativeSpeeds();
+                if (Math.abs(speeds.vxMetersPerSecond) > kDriveStraightSpeedToleranceMetersPerSecond
+                        || Math.abs(speeds.omegaRadiansPerSecond) > kHopperAlignTurnSpeedToleranceRadPerSec) {
+                    // Don't average different positions while still coasting out of the path.
+                    sum[0] = Translation2d.kZero;
+                    frames[0] = 0;
+                    lastUsedTime[0] = Timer.getFPGATimestamp();
+                    return;
+                }
+                if (m_lastAcceptedVisionTime > lastUsedTime[0]) {
+                    lastUsedTime[0] = m_lastAcceptedVisionTime;
+                    sum[0] = sum[0].plus(m_lastAcceptedVisionPose.getTranslation());
+                    frames[0]++;
+                }
+            },
+            interrupted -> {
+                timer.stop();
+                stopMotors();
+                SmartDashboard.putNumber("Vision/Reset Frames Used", frames[0]);
+                if (!interrupted && frames[0] >= kVisionResetMinFrames) {
+                    resetOdometry(new Pose2d(sum[0].div(frames[0]), getPose().getRotation()));
+                    m_visionResetSucceeded = true;
+                }
+                SmartDashboard.putBoolean("Vision/Reset Succeeded", m_visionResetSucceeded);
+            },
+            () -> frames[0] >= kVisionResetFrames || timer.hasElapsed(kVisionResetTimeoutSeconds),
+            this)
+            .withName("Reset Pose To Vision");
+    }
+
+    /**
+     * Uses the latest vision-corrected pose to turn and drive onto Hopper Center from either side,
+     * then turn to the hopper's final heading. Requires a successful resetPoseToVisionCommand;
+     * corrections farther than kMaxVisionJumpMeters are rejected in both axes.
+     */
+    public Command alignToHopperCenterCommand() {
+        return Commands.defer(() -> {
+            Pose2d target = getHopperCenterPose();
+            boolean hasVisionReset = m_visionResetSucceeded;
+            m_visionResetSucceeded = false; // each correction needs its own fresh reset
+            if (!hasVisionReset || !SmartDashboard.getBoolean("Vision/Enabled", true)
+                    || Timer.getFPGATimestamp() - m_lastAcceptedVisionTime > kMaxVisionAgeSeconds
+                    || target.getTranslation().getDistance(getPose().getTranslation()) > kMaxVisionJumpMeters) {
+                return runOnce(() -> {
+                    stopMotors();
+                    SmartDashboard.putString("Vision/Align Status", "skipped: no fresh reset or outside correction range");
+                });
+            }
+            HopperAlignmentController controller = new HopperAlignmentController(target);
+            Timer timer = new Timer();
+            return new FunctionalCommand(
+                () -> {
+                    controller.reset(getPose());
+                    timer.restart();
+                    SmartDashboard.putString("Vision/Align Status", "correcting position and heading");
+                },
+                () -> driveRobotRelative(controller.calculate(getPose(), getRobotRelativeSpeeds())),
+                interrupted -> {
+                    timer.stop();
+                    stopMotors();
+                    SmartDashboard.putString("Vision/Align Status", interrupted ? "interrupted"
+                        : controller.isFinished() ? "aligned" : "timed out");
+                },
+                () -> controller.isFinished() || timer.hasElapsed(kHopperAlignTimeoutSeconds),
+                this);
+        }, Set.of(this))
+            .withName("Align To Hopper Center");
+    }
+
     @Override
     public void periodic() {
     // This method will be called once per scheduler run
@@ -600,10 +805,12 @@ public class DriveSubsystem extends SubsystemBase {
         }
         m_drivenThisLoop = false;
 
-        // update odometry
+        // update odometry, then correct it with vision
         m_virtualLeftEncoderReading = getLeftDistanceMeters();
-        Pose2d pose = m_odometry.update(
+        m_poseEstimator.update(
             getHeadingRotation2d(), m_virtualLeftEncoderReading, getRightDistanceMeters());
+        updateVision();
+        Pose2d pose = getPose();
         m_field.setRobotPose(pose);
 
         // dashboard values for checking odometry against tape-measure ground truth

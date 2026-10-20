@@ -54,12 +54,14 @@ public class RobotContainer {
     /** The container for the robot. Contains subsystems, OI devices, and commands. */
     public RobotContainer() {
         // Named commands must be registered before any PathPlanner auto is loaded
-        NamedCommands.registerCommand("shoot", Autos.shoot(m_flywheel, m_loader, m_intake));
+        NamedCommands.registerCommand("shoot", Autos.shoot(m_driveSubsystem, m_flywheel, m_loader, m_intake));
         // "intake" runs until cancelled: an event marker zone in a path starts it when the robot
         // enters the zone and cancels it at the end of the zone.
         NamedCommands.registerCommand("intake", Autos.intake(m_intake, m_loader));
         // Same thing but ending on its own, for use as a step inside an auto's sequence.
         NamedCommands.registerCommand("intakeTimed", Autos.intakeWithTimeout(m_intake, m_loader));
+        // At Hopper Center: use Limelight to correct X/Y, drive back onto the spot, and restore heading
+        NamedCommands.registerCommand("visionAlign", Autos.visionAlign(m_driveSubsystem));
 
         // Lists every auto in deploy/pathplanner/autos, plus our non-PathPlanner routine
         m_autoChooser = AutoBuilder.buildAutoChooser();
@@ -122,16 +124,18 @@ public class RobotContainer {
 
     /**
      * Runs the flywheel at {@code targetRPM} and, once it is up to speed, feeds it with the loader
-     * and intake together (the intake keeps game pieces moving up behind the one being shot).
-     * Runs until the button is released.
+     * and intake together, with tiny forward-first drive pulses to help balls flow down.
+     * Owns the drivetrain while shooting and stops the wiggle when the button is released.
      */
     private Command shootCommand(double targetRPM) {
         return Commands.parallel(
             m_flywheel.runShooterCommand(targetRPM),
-            Commands.waitUntil(() -> m_flywheel.isAtSpeed(targetRPM))
+            m_driveSubsystem.stopDriveCommand()
+                .andThen(Commands.waitUntil(() -> m_flywheel.isAtSpeed(targetRPM)))
                 .andThen(Commands.parallel(
                     m_loader.runToFlywheelCommand(),
-                    m_intake.runIntakeCommand())));
+                    m_intake.runIntakeCommand(),
+                    m_driveSubsystem.shootingWiggleCommand())));
     }
 
     /**

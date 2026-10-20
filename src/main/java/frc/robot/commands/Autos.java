@@ -35,20 +35,36 @@ public final class Autos {
     /**
      * Spins the flywheel up to the launch speed, then feeds it with the loader once it's up to
      * speed (or after kShooterMaxSpinUpSeconds, whichever comes first). Ends on its own once
-     * feeding is done (registered as the "shoot" named command for PathPlanner autos).
+     * feeding is done, with a tiny forward-first drivetrain wiggle while feeding
+     * (registered as the "shoot" named command for PathPlanner autos).
      */
-    public static Command shoot(Flywheel flywheel, Loader loader, IntakeClass intake) {
+    public static Command shoot(DriveSubsystem drive, Flywheel flywheel, Loader loader, IntakeClass intake) {
         double targetRPM = IOConstants.kFlywheelLaunchRPM;
         return Commands.deadline(
             Commands.sequence(
+                drive.stopDriveCommand(),
                 Commands.waitUntil(() -> flywheel.isAtSpeed(targetRPM))
                     .withTimeout(AutoConstants.kShooterMaxSpinUpSeconds),
                 // feed with the loader, running the intake alongside it
                 Commands.deadline(
                     loader.runToFlywheelCommand().withTimeout(AutoConstants.kShooterFeedSeconds),
-                    intake.runIntakeCommand())),
+                    intake.runIntakeCommand(),
+                    drive.shootingWiggleCommand())),
             flywheel.runShooterCommand(targetRPM)
         ).withName("autoShoot");
+    }
+
+    /**
+     * For use at Hopper Center (back to the hopper, where the Limelight sees its tags): snaps the
+     * pose to the averaged vision position, then turns and drives onto Hopper Center and restores
+     * its final heading. Corrects left/right and forward/back starting offsets as well as path drift.
+     * Registered as the "visionAlign" named command. Without fresh tags it holds still and skips alignment.
+     */
+    public static Command visionAlign(DriveSubsystem drive) {
+        return Commands.sequence(
+            drive.resetPoseToVisionCommand(),
+            drive.alignToHopperCenterCommand()
+        ).withName("visionAlign");
     }
 
     /**

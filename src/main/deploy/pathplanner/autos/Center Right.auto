@@ -7,25 +7,7 @@
         {
           "type": "named",
           "data": {
-            "name": "shoot"
-          }
-        },
-        {
-          "type": "named",
-          "data": {
-            "name": "shoot"
-          }
-        },
-        {
-          "type": "path",
-          "data": {
-            "pathName": "hopper front test R"
-          }
-        },
-        {
-          "type": "path",
-          "data": {
-            "pathName": "reset back"
+            "name": "visionAlign"
           }
         },
         {
@@ -50,6 +32,42 @@
           "type": "path",
           "data": {
             "pathName": "reset back"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "visionAlign"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "hopper front test R"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "reset back"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "visionAlign"
           }
         }
       ]

@@ -8,7 +8,7 @@
       },
       "prevControl": null,
       "nextControl": {
-        "x": 1.8935660091047042,
+        "x": 1.8935660091047044,
         "y": 4.0483080424886175
       },
       "isLocked": false,
@@ -132,7 +132,12 @@
       "name": "intake",
       "waypointRelativePos": 0.27291381668951786,
       "endWaypointRelativePos": 6.937756497947994,
-      "command": null
+      "command": {
+        "type": "named",
+        "data": {
+          "name": "intake"
+        }
+      }
     }
   ],
   "globalConstraints": {
