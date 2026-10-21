@@ -21,6 +21,7 @@ import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.epilogue.NotLogged;
 import edu.wpi.first.math.MathUtil;
+import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -62,6 +63,8 @@ public class RobotContainer {
         NamedCommands.registerCommand("intakeTimed", Autos.intakeWithTimeout(m_intake, m_loader));
         // At Hopper Center: use Limelight to correct X/Y, drive back onto the spot, and restore heading
         NamedCommands.registerCommand("visionAlign", Autos.visionAlign(m_driveSubsystem));
+        // Reacquire field position after the trench route before the final return to the hopper.
+        NamedCommands.registerCommand("postTrenchRelocalize", m_driveSubsystem.postTrenchRelocalizeCommand());
 
         // Lists every auto in deploy/pathplanner/autos, plus our non-PathPlanner routine
         m_autoChooser = AutoBuilder.buildAutoChooser();
@@ -117,9 +120,12 @@ public class RobotContainer {
         // Put the robot back at the starting pose (line it up on the field first)
         m_driverController.start().onTrue(m_driveSubsystem.resetOdometryCommand());
 
-        // Zero the drive encoders and put the robot at PathPlanner's "Hopper Center" waypoint,
-        // front facing directly away from the hopper (line it up there on the field first)
-        m_driverController.back().onTrue(m_driveSubsystem.resetToHopperCenterCommand());
+        // While enabled, hold Back to center the camera on tag 26 (tag 10 on red).
+        m_driverController.back().and(DriverStation::isEnabled)
+            .whileTrue(m_driveSubsystem.alignToHopperCenterCommand());
+        // While disabled, Back still seeds the known pose after the robot is lined up by hand.
+        m_driverController.back().and(DriverStation::isDisabled)
+            .onTrue(m_driveSubsystem.resetToHopperCenterCommand());
     }
 
     /**

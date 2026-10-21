@@ -12,11 +12,17 @@ public final class HopperAlignmentController {
     private enum Phase { TURN_TO_POSITION, DRIVE_TO_POSITION, FINAL_HEADING, FINISHED }
 
     private final Pose2d m_target;
+    private final double m_positionToleranceMeters;
     private Phase m_phase = Phase.TURN_TO_POSITION;
     private double m_direction = 1.0;
 
     public HopperAlignmentController(Pose2d target) {
+        this(target, kHopperAlignToleranceMeters);
+    }
+
+    public HopperAlignmentController(Pose2d target, double positionToleranceMeters) {
         m_target = target;
+        m_positionToleranceMeters = positionToleranceMeters;
     }
 
     /** Choose the shorter turn, allowing the robot to back toward the hopper. */
@@ -41,7 +47,7 @@ public final class HopperAlignmentController {
         if (m_phase == Phase.FINISHED) {
             return new ChassisSpeeds();
         }
-        if (distance <= kHopperAlignToleranceMeters) {
+        if (distance <= m_positionToleranceMeters) {
             m_phase = Phase.FINAL_HEADING;
         } else if (m_phase == Phase.FINAL_HEADING) {
             // A position correction may arrive while turning. Reacquire the center if needed.

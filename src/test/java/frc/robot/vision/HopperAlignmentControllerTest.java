@@ -1,6 +1,7 @@
 package frc.robot.vision;
 
 import static frc.robot.Constants.AutoConstants.*;
+import static frc.robot.Constants.OdometryConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import org.junit.jupiter.api.Test;
@@ -13,7 +14,8 @@ import edu.wpi.first.math.kinematics.ChassisSpeeds;
 
 class HopperAlignmentControllerTest {
     private static final double DT = 0.02;
-    private static final Pose2d TARGET = new Pose2d(3.4259, 4.1015, Rotation2d.fromDegrees(180));
+    private static final Pose2d TARGET = new Pose2d(kHopperCenterXMeters, kHopperCenterYMeters,
+        Rotation2d.fromDegrees(kHopperCenterHeadingDegrees));
 
     @Test
     void centersFromEitherSideAndDifferentHeadings() {

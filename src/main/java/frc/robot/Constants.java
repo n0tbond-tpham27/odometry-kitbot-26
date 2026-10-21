@@ -97,13 +97,13 @@ public final class Constants {
 
         // Shooting agitation: keep every target ahead of where shooting started so the robot
         // moves away from the hopper first, and never targets a position behind that start.
-        public static final double kShootWiggleForwardMeters = 0.03;
-        public static final double kShootWiggleReturnMeters = 0.01;
+        public static final double kShootWiggleForwardMeters = 0.02;
+        public static final double kShootWiggleReturnMeters = 0.008;
         public static final double kShootWiggleMaxSpeedMetersPerSecond = 0.12;
-        /** Each direction gets 0.30 s of motion followed by 0.20 s of rest. */
-        public static final double kShootWiggleIntervalSeconds = 0.50;
-        public static final double kShootWiggleMoveSeconds = 0.30;
-        public static final double kShootWigglePositionP = 6.0;
+        /** Each direction gets 0.22 s of motion followed by 0.13 s of rest. */
+        public static final double kShootWiggleIntervalSeconds = 0.35;
+        public static final double kShootWiggleMoveSeconds = 0.22;
+        public static final double kShootWigglePositionP = 8.0;
         public static final double kShootWiggleHeadingP = 2.0;
         public static final double kShootWiggleMaxTurnRateRadPerSec = 0.20;
 
@@ -163,8 +163,11 @@ public final class Constants {
         // moved in the PathPlanner GUI, copy its new X/Y here.
         /** X position of the "Hopper Center" waypoint (meters, blue side). */
         public static final double kHopperCenterXMeters = 3.42587253414264;
-        /** Y position of the "Hopper Center" waypoint (meters, blue side). */
-        public static final double kHopperCenterYMeters = 4.101540212443095;
+        /** Center of AprilTag 26 in WPILib's installed 2026 welded field layout. */
+        public static final double kHopperTagFaceXMeters = 4.0218614;
+        public static final double kHopperCenterYMeters = 4.0346376;
+        /** Robot-center distance out from the tag face; retains the existing bumper clearance. */
+        public static final double kHopperTagStandOffMeters = kHopperTagFaceXMeters - kHopperCenterXMeters;
         /** Heading at "Hopper Center": front facing directly away from the hopper, toward the alliance wall. */
         public static final double kHopperCenterHeadingDegrees = 180.0;
     }
@@ -172,6 +175,15 @@ public final class Constants {
     public static class VisionConstants {
         /** Name of the Limelight, as set in its web interface (default "limelight"). */
         public static final String kLimelightName = "limelight";
+        public static final int kBlueHopperTagId = 26;
+        /** Rotationally corresponding tag on the red hub face. */
+        public static final int kRedHopperTagId = 10;
+        public static final int kHopperTagAcquireFrames = 3;
+        public static final int kHopperTagConfirmFrames = 3;
+        public static final double kHopperTagAcquireTimeoutSeconds = 1.2;
+        public static final double kHopperTagMaxSpreadMeters = 0.08;
+        public static final double kHopperTagMaxLateralMeters = 1.0;
+        public static final double kHopperTagMaxRangeMeters = 2.0;
         /**
          * How much to trust a vision position, as a standard deviation (meters): bigger means
          * trust it less and move the pose toward it more gently. 0.7 is Limelight's suggested
@@ -192,7 +204,7 @@ public final class Constants {
          */
         public static final double kMaxVisionJumpMeters = 1.0;
         /**
-         * The auto's "visionAlign" step averages this many accepted vision frames before snapping
+         * The general-purpose vision pose reset averages this many accepted frames before snapping
          * the pose to them (about 0.17 s at the Limelight's 30 fps)...
          */
         public static final int kVisionResetFrames = 5;
@@ -204,6 +216,13 @@ public final class Constants {
         public static final double kMaxVisionAgeSeconds = 0.3;
         /** Allow a small timestamp skew between NetworkTables and the FPGA clock. */
         public static final double kVisionFutureToleranceSeconds = 0.05;
+        /** Deliberate localization stop after the trench route, before the reset-back path. */
+        public static final double kPostTrenchVisionTimeoutSeconds = 1.0;
+        public static final int kPostTrenchVisionFrames = 5;
+        /** Every pair of stationary camera positions must agree within this distance. */
+        public static final double kPostTrenchVisionMaxSpreadMeters = 0.12;
+        /** Larger than normal fusion's limit; corrections over 1 m additionally need multiple tags. */
+        public static final double kPostTrenchVisionMaxCorrectionMeters = 2.0;
         /** Field size (meters), from WPILib's 2026 AprilTag layout; vision positions outside it are rejected. */
         public static final double kFieldLengthMeters = 16.541;
         public static final double kFieldWidthMeters = 8.069;

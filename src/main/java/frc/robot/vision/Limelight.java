@@ -2,6 +2,8 @@ package frc.robot.vision;
 
 import java.util.Optional;
 
+import static frc.robot.Constants.VisionConstants.*;
+
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.networktables.DoubleArrayPublisher;
@@ -24,6 +26,19 @@ public class Limelight {
     public record PoseMeasurement(
         Pose2d pose, double timestampSeconds, int tagCount, double avgTagDistanceMeters, int[] tagIds) {}
 
+    /** Robot and camera positions relative to the selected tag's center, independent of odometry. */
+    public record TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
+            double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters) {
+        public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
+                double fieldHeadingDegrees) {
+            this(tagId, rightMeters, outwardMeters, timestampSeconds, fieldHeadingDegrees, rightMeters, outwardMeters);
+        }
+
+        public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds) {
+            this(tagId, rightMeters, outwardMeters, timestampSeconds, Double.NaN);
+        }
+    }
+
     // Layout of the botpose arrays: x, y, z, roll, pitch, yaw, latency (ms), tag count,
     // tag span, average tag distance, average tag area, then 7 values per tag (ID first).
     private static final int kLatencyIndex = 6;
@@ -34,6 +49,12 @@ public class Limelight {
 
     private final DoubleArraySubscriber m_botPoseSub;
     private final DoubleArrayPublisher m_orientationPub;
+    private final DoubleArraySubscriber m_targetPoseSub;
+    private final DoubleArraySubscriber m_cameraTargetPoseSub;
+    private final DoubleArraySubscriber m_targetStatsSub;
+    private final DoubleArraySubscriber m_tagFieldPoseSub;
+    private final edu.wpi.first.networktables.DoublePublisher m_priorityPub;
+    private long m_lastTargetTimestampMicros = 0;
     /** NetworkTables timestamp of the last result returned, so each frame is used only once. */
     private long m_lastTimestampMicros = 0;
 
@@ -44,6 +65,86 @@ public class Limelight {
         m_botPoseSub = table.getDoubleArrayTopic("botpose_orb_wpiblue")
             .subscribe(new double[0], PubSubOption.keepDuplicates(true));
         m_orientationPub = table.getDoubleArrayTopic("robot_orientation_set").publish();
+        m_targetPoseSub = table.getDoubleArrayTopic("botpose_targetspace")
+            .subscribe(new double[0], PubSubOption.keepDuplicates(true));
+        m_cameraTargetPoseSub = table.getDoubleArrayTopic("camerapose_targetspace")
+            .subscribe(new double[0], PubSubOption.keepDuplicates(true));
+        // t2d gives validity, tag ID, and both latencies from the same camera frame.
+        m_targetStatsSub = table.getDoubleArrayTopic("t2d")
+            .subscribe(new double[0], PubSubOption.keepDuplicates(true));
+        // MegaTag1 supplies an independent heading for initial gyro alignment; MegaTag2 cannot.
+        m_tagFieldPoseSub = table.getDoubleArrayTopic("botpose_wpiblue")
+            .subscribe(new double[0], PubSubOption.keepDuplicates(true));
+        m_priorityPub = table.getDoubleTopic("priorityid").publish();
+    }
+
+    /** Select the hopper tag for single-target measurements without filtering field localization. */
+    public void setPriorityTagId(int tagId) {
+        m_priorityPub.set(tagId);
+    }
+
+    public Optional<TargetMeasurement> getNewTargetPose(int requiredTagId) {
+        TimestampedDoubleArray pose = m_targetPoseSub.getAtomic();
+        TimestampedDoubleArray stats = m_targetStatsSub.getAtomic();
+        if (pose.timestamp == m_lastTargetTimestampMicros) {
+            return Optional.empty();
+        }
+        Optional<TargetMeasurement> result = parseTargetPose(
+            pose.value, pose.timestamp, stats.value, stats.timestamp, requiredTagId);
+        // Retry a pose whose matching stats have not arrived yet.
+        if (result.isPresent()) {
+            m_lastTargetTimestampMicros = pose.timestamp;
+            TimestampedDoubleArray cameraPose = m_cameraTargetPoseSub.getAtomic();
+            TargetMeasurement withCamera = withCameraPose(
+                result.get(), pose.timestamp, cameraPose.value, cameraPose.timestamp);
+            TimestampedDoubleArray fieldPose = m_tagFieldPoseSub.getAtomic();
+            return Optional.of(withFieldHeading(withCamera, pose.timestamp, fieldPose.value, fieldPose.timestamp));
+        }
+        return result;
+    }
+
+    static TargetMeasurement withCameraPose(TargetMeasurement measurement, long poseTimestampMicros,
+            double[] cameraPose, long cameraTimestampMicros) {
+        boolean valid = cameraPose.length >= 6 && cameraTimestampMicros > 0
+            && Math.abs(poseTimestampMicros - cameraTimestampMicros) <= 20000
+            && Double.isFinite(cameraPose[0]) && Double.isFinite(cameraPose[2])
+            && cameraPose[2] > 0.0 && cameraPose[2] <= kHopperTagMaxRangeMeters
+            && Math.abs(cameraPose[0]) <= kHopperTagMaxLateralMeters;
+        return new TargetMeasurement(measurement.tagId(), measurement.rightMeters(), measurement.outwardMeters(),
+            measurement.timestampSeconds(), measurement.fieldHeadingDegrees(),
+            valid ? cameraPose[0] : Double.NaN, valid ? cameraPose[2] : Double.NaN);
+    }
+
+    static TargetMeasurement withFieldHeading(TargetMeasurement measurement, long poseTimestampMicros,
+            double[] fieldPose, long fieldTimestampMicros) {
+        boolean valid = fieldPose.length >= kMinLength + kValuesPerTag
+            && Math.abs(poseTimestampMicros - fieldTimestampMicros) <= 20000
+            && Double.isFinite(fieldPose[5]) && Double.isFinite(fieldPose[kTagCountIndex])
+            && fieldPose[kTagCountIndex] >= 1.0;
+        if (valid && fieldPose[kTagCountIndex] == 1.0) {
+            double ambiguity = fieldPose[kMinLength + 6];
+            valid = Double.isFinite(ambiguity) && ambiguity >= 0.0 && ambiguity <= 0.4;
+        }
+        return new TargetMeasurement(measurement.tagId(), measurement.rightMeters(), measurement.outwardMeters(),
+            measurement.timestampSeconds(), valid ? fieldPose[5] : Double.NaN,
+            measurement.cameraRightMeters(), measurement.cameraOutwardMeters());
+    }
+
+    static Optional<TargetMeasurement> parseTargetPose(
+            double[] pose, long poseTimestampMicros, double[] stats, long statsTimestampMicros, int requiredTagId) {
+        if (pose.length < 6 || stats.length < 10 || poseTimestampMicros <= 0 || statsTimestampMicros <= 0
+                || Math.abs(poseTimestampMicros - statsTimestampMicros) > 20000
+                || stats[0] != 1.0 || stats[9] != requiredTagId
+                || !Double.isFinite(pose[0]) || !Double.isFinite(pose[2])
+                || !Double.isFinite(stats[2]) || !Double.isFinite(stats[3])
+                || stats[2] < 0.0 || stats[3] < 0.0
+                || pose[2] <= 0.1 || pose[2] > kHopperTagMaxRangeMeters
+                || Math.abs(pose[0]) > kHopperTagMaxLateralMeters) {
+            return Optional.empty();
+        }
+        // Limelight target axes: +X right when looking at the tag, +Z out of its face.
+        double captureSeconds = poseTimestampMicros / 1e6 - (stats[2] + stats[3]) / 1000.0;
+        return Optional.of(new TargetMeasurement(requiredTagId, pose[0], pose[2], captureSeconds));
     }
 
     /**

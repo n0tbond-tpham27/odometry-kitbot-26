@@ -55,16 +55,14 @@ public final class Autos {
     }
 
     /**
-     * For use at Hopper Center (back to the hopper, where the Limelight sees its tags): snaps the
-     * pose to the averaged vision position, then turns and drives onto Hopper Center and restores
-     * its final heading. Corrects left/right and forward/back starting offsets as well as path drift.
-     * Registered as the "visionAlign" named command. Without fresh tags it holds still and skips alignment.
+     * Centers physically on the hopper's selected AprilTag and confirms the result with fresh
+     * target-relative measurements. If alignment fails, holds the drivetrain so the next path
+     * cannot depart from a known unconfirmed position. Disable/cancel the auto to release the hold.
      */
     public static Command visionAlign(DriveSubsystem drive) {
-        return Commands.sequence(
-            drive.resetPoseToVisionCommand(),
-            drive.alignToHopperCenterCommand()
-        ).withName("visionAlign");
+        return drive.alignToHopperCenterCommand().andThen(Commands.either(
+            Commands.none(), drive.run(drive::stopMotors).withName("Hold: Hopper Tag Not Centered"),
+            drive::isHopperTagAligned)).withName("visionAlign");
     }
 
     /**

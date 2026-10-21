@@ -64,11 +64,13 @@ import com.ctre.phoenix6.sim.Pigeon2SimState;
 
 import frc.robot.vision.Limelight;
 import frc.robot.vision.Limelight.PoseMeasurement;
-import frc.robot.vision.HopperAlignmentController;
+import frc.robot.vision.VisionPoseReacquisition;
 import frc.robot.commands.ShootingWiggleController;
+import frc.robot.commands.HopperTagAlignmentCommand;
+import frc.robot.vision.Limelight.TargetMeasurement;
 
 @Logged(strategy = Logged.Strategy.OPT_IN)
-public class DriveSubsystem extends SubsystemBase {
+public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentCommand.IO {
     // --- motors ---
     private final SparkMax m_leftLeader;
     private final SparkMax m_leftFollower;
@@ -103,6 +105,10 @@ public class DriveSubsystem extends SubsystemBase {
     private double m_lastAcceptedVisionTime = Double.NEGATIVE_INFINITY;
     /** Only a completed, fresh vision reset authorizes the following hopper correction. */
     private boolean m_visionResetSucceeded = false;
+    /** Non-null only during the deliberate stationary localization stop after a trench route. */
+    private VisionPoseReacquisition m_activeVisionReacquisition = null;
+    private boolean m_hopperTagAlignmentActive = false;
+    private boolean m_hopperTagAligned = false;
     /** Gyro heading (radians) at the last encoder reset; the virtual left encoder is measured from here. */
     private double m_headingAtResetRadians = 0.0;
     /** Raw encoder reading at the last reset; subtracted out so distances start from zero. */
@@ -657,6 +663,11 @@ public class DriveSubsystem extends SubsystemBase {
         // MegaTag2 needs our field heading every loop, even while vision is switched off here
         m_limelight.setRobotOrientation(getPose().getRotation().getDegrees(), yawRateDegreesPerSecond);
 
+        if (m_hopperTagAlignmentActive) {
+            // The alignment command owns tag-relative localization until it finishes.
+            return;
+        }
+
         Optional<PoseMeasurement> measurement = m_limelight.getNewPose();
         if (measurement.isEmpty()) {
             return;
@@ -671,6 +682,18 @@ public class DriveSubsystem extends SubsystemBase {
         // How far vision disagrees with the current pose; settles near 0 once vision has pulled it in
         double disagreementMeters = m.pose().getTranslation().getDistance(getPose().getTranslation());
         SmartDashboard.putNumber("Vision/Disagreement (m)", disagreementMeters);
+
+        if (m_activeVisionReacquisition != null) {
+            double now = Timer.getFPGATimestamp();
+            if (!SmartDashboard.getBoolean("Vision/Enabled", true) || !isStoppedForVision()) {
+                m_activeVisionReacquisition.reset(now);
+            } else {
+                m_activeVisionReacquisition.add(m, getPose(), now);
+            }
+            SmartDashboard.putNumber("Vision/Post Trench Frames", m_activeVisionReacquisition.getFrameCount());
+            // Keep the odometry baseline stable while the independently validated cluster forms.
+            return;
+        }
 
         String rejectReason = null;
         double ageSeconds = Timer.getFPGATimestamp() - m.timestampSeconds();
@@ -702,6 +725,61 @@ public class DriveSubsystem extends SubsystemBase {
             VecBuilder.fill(kVisionXYStdDevMeters, kVisionXYStdDevMeters, 9999999));
         m_lastAcceptedVisionPose = m.pose();
         m_lastAcceptedVisionTime = Timer.getFPGATimestamp();
+    }
+
+    private boolean isStoppedForVision() {
+        ChassisSpeeds speeds = getRobotRelativeSpeeds();
+        return Math.abs(speeds.vxMetersPerSecond) <= kDriveStraightSpeedToleranceMetersPerSecond
+            && Math.abs(speeds.omegaRadiansPerSecond) <= kHopperAlignTurnSpeedToleranceRadPerSec;
+    }
+
+    /**
+     * Re-establishes field X/Y after the trench route, before following reset back. Only uses
+     * fresh captures taken after stopping; multi-tag consensus can recover larger encoder drift.
+     * MegaTag2 does not independently measure heading, so heading continues to use the gyro.
+     */
+    public Command postTrenchRelocalizeCommand() {
+        VisionPoseReacquisition acquisition = new VisionPoseReacquisition(
+            kPostTrenchVisionFrames, kPostTrenchVisionMaxSpreadMeters, kPostTrenchVisionMaxCorrectionMeters);
+        Timer timer = new Timer();
+        return new FunctionalCommand(
+            () -> {
+                stopMotors();
+                m_visionResetSucceeded = false;
+                acquisition.reset(Timer.getFPGATimestamp());
+                m_activeVisionReacquisition = acquisition;
+                timer.restart();
+                SmartDashboard.putString("Vision/Post Trench Status", "waiting for stationary tag consensus");
+                SmartDashboard.putNumber("Vision/Post Trench Frames", 0);
+            },
+            () -> {
+                stopMotors();
+                if (!SmartDashboard.getBoolean("Vision/Enabled", true) || !isStoppedForVision()) {
+                    acquisition.reset(Timer.getFPGATimestamp());
+                }
+            },
+            interrupted -> {
+                timer.stop();
+                stopMotors();
+                m_activeVisionReacquisition = null;
+                Optional<Translation2d> position = acquisition.getPosition(Timer.getFPGATimestamp());
+                boolean success = !interrupted && SmartDashboard.getBoolean("Vision/Enabled", true)
+                    && isStoppedForVision() && position.isPresent();
+                if (success) {
+                    Pose2d corrected = new Pose2d(position.get(), getPose().getRotation());
+                    resetOdometry(corrected);
+                    m_lastAcceptedVisionPose = corrected;
+                    m_lastAcceptedVisionTime = Timer.getFPGATimestamp();
+                }
+                SmartDashboard.putNumber("Vision/Post Trench Frames", acquisition.getFrameCount());
+                SmartDashboard.putBoolean("Vision/Post Trench Succeeded", success);
+                SmartDashboard.putString("Vision/Post Trench Status", success ? "field position recovered"
+                    : interrupted ? "interrupted" : "no consensus; kept odometry");
+            },
+            () -> acquisition.getPosition(Timer.getFPGATimestamp()).isPresent()
+                || timer.hasElapsed(kPostTrenchVisionTimeoutSeconds),
+            this)
+            .withName("Post Trench Relocalize");
     }
 
     /**
@@ -755,43 +833,49 @@ public class DriveSubsystem extends SubsystemBase {
             .withName("Reset Pose To Vision");
     }
 
-    /**
-     * Uses the latest vision-corrected pose to turn and drive onto Hopper Center from either side,
-     * then turn to the hopper's final heading. Requires a successful resetPoseToVisionCommand;
-     * corrections farther than kMaxVisionJumpMeters are rejected in both axes.
-     */
+    /** Center the camera on blue tag 26 (red tag 10), independent of the normal odometry jump gate. */
     public Command alignToHopperCenterCommand() {
-        return Commands.defer(() -> {
-            Pose2d target = getHopperCenterPose();
-            boolean hasVisionReset = m_visionResetSucceeded;
-            m_visionResetSucceeded = false; // each correction needs its own fresh reset
-            if (!hasVisionReset || !SmartDashboard.getBoolean("Vision/Enabled", true)
-                    || Timer.getFPGATimestamp() - m_lastAcceptedVisionTime > kMaxVisionAgeSeconds
-                    || target.getTranslation().getDistance(getPose().getTranslation()) > kMaxVisionJumpMeters) {
-                return runOnce(() -> {
-                    stopMotors();
-                    SmartDashboard.putString("Vision/Align Status", "skipped: no fresh reset or outside correction range");
-                });
-            }
-            HopperAlignmentController controller = new HopperAlignmentController(target);
-            Timer timer = new Timer();
-            return new FunctionalCommand(
-                () -> {
-                    controller.reset(getPose());
-                    timer.restart();
-                    SmartDashboard.putString("Vision/Align Status", "correcting position and heading");
-                },
-                () -> driveRobotRelative(controller.calculate(getPose(), getRobotRelativeSpeeds())),
-                interrupted -> {
-                    timer.stop();
-                    stopMotors();
-                    SmartDashboard.putString("Vision/Align Status", interrupted ? "interrupted"
-                        : controller.isFinished() ? "aligned" : "timed out");
-                },
-                () -> controller.isFinished() || timer.hasElapsed(kHopperAlignTimeoutSeconds),
-                this);
-        }, Set.of(this))
-            .withName("Align To Hopper Center");
+        return Commands.defer(() -> new HopperTagAlignmentCommand(
+            this, this, getHopperCenterPose(), AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId,
+            Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true)), Set.of(this))
+            .withName("Align On Hopper Tag");
+    }
+
+    @Override
+    public void beginHopperTagAlignment(int tagId) {
+        m_hopperTagAlignmentActive = true;
+        m_hopperTagAligned = false;
+        m_limelight.setPriorityTagId(tagId);
+        SmartDashboard.putNumber("Vision/Hopper Tag ID", tagId);
+        m_field.getObject("Hopper Target").setPose(getHopperCenterPose());
+    }
+
+    @Override
+    public void endHopperTagAlignment() {
+        m_hopperTagAlignmentActive = false;
+        m_limelight.setPriorityTagId(-1);
+    }
+
+    @Override
+    public Optional<TargetMeasurement> getNewHopperTagPose(int tagId) {
+        return m_limelight.getNewTargetPose(tagId);
+    }
+
+    @Override
+    public void fuseHopperTagPose(Pose2d pose, double timestampSeconds) {
+        m_poseEstimator.addVisionMeasurement(pose, timestampSeconds, VecBuilder.fill(0.04, 0.04, 9999999));
+    }
+
+    @Override
+    public void reportHopperTagAlignment(String status, boolean success, double rightMeters) {
+        m_hopperTagAligned = success;
+        SmartDashboard.putBoolean("Vision/Hopper Centered", success);
+        SmartDashboard.putString("Vision/Align Status", status);
+        SmartDashboard.putNumber("Vision/Hopper Right Error (m)", rightMeters);
+    }
+
+    public boolean isHopperTagAligned() {
+        return m_hopperTagAligned;
     }
 
     @Override
