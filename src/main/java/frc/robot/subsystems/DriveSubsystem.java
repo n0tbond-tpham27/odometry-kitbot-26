@@ -65,6 +65,9 @@ import com.ctre.phoenix6.sim.Pigeon2SimState;
 import frc.robot.vision.Limelight;
 import frc.robot.vision.Limelight.PoseMeasurement;
 import frc.robot.vision.VisionPoseReacquisition;
+import frc.robot.vision.HopperStartView;
+import frc.robot.vision.HopperStartView.Reference;
+import frc.robot.commands.CaptureHopperStartViewCommand;
 import frc.robot.commands.ShootingWiggleController;
 import frc.robot.commands.HopperTagAlignmentCommand;
 import frc.robot.vision.Limelight.TargetMeasurement;
@@ -99,6 +102,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     // --- Vision ---
     private final Limelight m_limelight = new Limelight(kLimelightName);
+    private final HopperStartView m_hopperStartView = new HopperStartView();
     /** Most recent vision position that passed the checks in updateVision()... */
     private Pose2d m_lastAcceptedVisionPose = null;
     /** ...and when it was accepted (FPGA seconds). */
@@ -855,28 +859,59 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     }
 
     public Command alignToHopperCenterCommand(double maxSpeed) {
-        return alignToHopperCommand(maxSpeed, 0.0);
+        return alignToHopperCommand(maxSpeed, false);
     }
 
-    /** Autonomous returns use a separate lateral target without changing the known startup pose. */
+    public Command captureHopperStartViewCommand() {
+        return new CaptureHopperStartViewCommand(this, this, m_hopperStartView,
+            DriveSubsystem::getHopperCenterPose, () -> AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId,
+            Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true));
+    }
+
+    /** Called at every autonomous enable, including autos that do not capture a hopper view. */
+    public void clearHopperStartView() {
+        m_hopperStartView.reset(AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId,
+            getHopperCenterPose(), Timer.getFPGATimestamp());
+        SmartDashboard.putBoolean("Vision/Start View Saved", false);
+        SmartDashboard.putString("Vision/Start View Status", "not captured for this autonomous run");
+    }
+
+    /** Reuse the stationary view saved before the first shot, including its angle and distance. */
     public Command alignToHopperReturnCommand(double maxSpeed) {
-        return alignToHopperCommand(maxSpeed, kHopperReturnLeftOffsetMeters);
+        return alignToHopperCommand(maxSpeed, true);
     }
 
-    private Command alignToHopperCommand(double maxSpeed, double leftOffsetMeters) {
-        return Commands.defer(() -> new HopperTagAlignmentCommand(
-            this, this, getHopperCenterPose(), AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId,
-            Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed,
-            leftOffsetMeters), Set.of(this))
+    private Command alignToHopperCommand(double maxSpeed, boolean useStartView) {
+        return Commands.defer(() -> {
+            int tagId = AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId;
+            Reference reference = useStartView ? m_hopperStartView.getReference()
+                .filter(saved -> saved.tagId() == tagId).orElse(null) : null;
+            if (useStartView) {
+                SmartDashboard.putString("Auto/Return Reference", reference != null
+                    ? "saved startup tag view" : "known centered pose: startup view unavailable");
+            }
+            return new HopperTagAlignmentCommand(this, this, getHopperCenterPose(), tagId,
+                Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed, reference);
+        }, Set.of(this))
             .withName("Align On Hopper Tag");
+    }
+
+    @Override
+    public void reportHopperStartViewTarget(Reference reference) {
+        SmartDashboard.putString("Vision/Hopper Alignment Target", "restore startup position and heading using both tags");
+        SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", reference.imageHorizontalDegrees());
+        SmartDashboard.putNumber("Vision/Hopper Companion Image Target (deg)", reference.companionImageHorizontalDegrees());
+        SmartDashboard.putNumber("Vision/Hopper Camera Range Target (m)", reference.cameraOutwardMeters());
+        m_field.getObject("Hopper Target").setPose(reference.startingPose());
     }
 
     @Override
     public void reportHopperLeftTarget(double meters) {
         SmartDashboard.putNumber("Vision/Hopper Left Target (m)", meters);
-        SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", Math.abs(meters) < 1e-9 ? 0.0 : Double.NaN);
+        SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", Double.NaN);
+        SmartDashboard.putNumber("Vision/Hopper Companion Image Target (deg)", Double.NaN);
         SmartDashboard.putString("Vision/Hopper Alignment Target", Math.abs(meters) < 1e-9
-            ? "tag image center" : meters + " m to Driver Station left");
+            ? "centered robot position and square heading using both tags" : meters + " m to Driver Station left");
         Pose2d reference = getHopperCenterPose();
         m_field.getObject("Hopper Target").setPose(new Pose2d(reference.getTranslation().plus(
             new Translation2d(0.0, -meters).rotateBy(reference.getRotation())), reference.getRotation()));
@@ -889,6 +924,8 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
         m_hopperPoseAcquired = false;
         m_limelight.setPriorityTagId(tagId);
         SmartDashboard.putNumber("Vision/Hopper Tag ID", tagId);
+        SmartDashboard.putNumber("Vision/Hopper Companion Tag ID", Limelight.companionTagId(tagId));
+        SmartDashboard.putNumber("Vision/Hopper Companion Image Error (deg)", Double.NaN);
         SmartDashboard.putNumber("Vision/Hopper Path Left Bias (m)", kHopperDriverStationLeftOffsetMeters);
         SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", 0.0);
         SmartDashboard.putNumber("Vision/Hopper Image Tolerance (deg)", kHopperImageCenterToleranceDegrees);
@@ -916,8 +953,19 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     }
 
     @Override
+    public void reportHopperCompanionImageError(double degrees) {
+        SmartDashboard.putNumber("Vision/Hopper Companion Image Error (deg)", degrees);
+    }
+
+    @Override
     public void fuseHopperTagPose(Pose2d pose, double timestampSeconds) {
         m_poseEstimator.addVisionMeasurement(pose, timestampSeconds, VecBuilder.fill(0.015, 0.015, 9999999));
+    }
+
+    @Override
+    public void fuseHopperPairPose(Pose2d pose, double timestampSeconds) {
+        // Both hopper tags independently constrain heading; MT2's gyro-based yaw cannot.
+        m_poseEstimator.addVisionMeasurement(pose, timestampSeconds, VecBuilder.fill(0.015, 0.015, Math.toRadians(2.0)));
     }
 
     @Override

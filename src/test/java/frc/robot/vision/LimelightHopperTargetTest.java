@@ -24,6 +24,70 @@ class LimelightHopperTargetTest {
     }
 
     @Test
+    void usesBothHopperTagsAndIndependentHeadingEvenWhenSuppliedGyroHeadingIsWrong() {
+        try (var instance = NetworkTableInstance.create()) {
+            var limelight = new Limelight(instance, "test");
+            var table = instance.getTable("test");
+            try (var paired = table.getDoubleArrayTopic("botpose_wpiblue").publish();
+                    var gyroBased = table.getDoubleArrayTopic("botpose_orb_wpiblue").publish()) {
+                double[] frame = pairedFrame(25, 26);
+                frame[0] -= 0.6;
+                frame[1] -= 0.25;
+                frame[5] = 167;
+                paired.set(frame, 10_000_000);
+                gyroBased.set(new double[] {GOAL.getX(), GOAL.getY(), 0, 0, 0, 180, 40, 1, 0, 1, 0.2}, 10_000_000);
+                var target = limelight.getNewHopperTarget(26, GOAL, 180, 10.02).orElseThrow();
+                assertTrue(target.hasHopperPair());
+                assertEquals(167, target.fieldHeadingDegrees(), 1e-9);
+                assertEquals(-6, target.imageHorizontalDegrees(), 1e-9);
+                assertEquals(-31, target.companionImageHorizontalDegrees(), 1e-9);
+                assertEquals(0.25, target.rightMeters(), 1e-9);
+                assertEquals(GOAL.getX() - 0.6, target.toFieldPose(GOAL).getX(), 1e-9);
+                assertTrue(limelight.getHopperSource().contains("25 + 26"));
+                // An MT2 update cannot masquerade as another independent two-tag capture.
+                assertFalse(limelight.getNewHopperTarget(26, GOAL, 180, 10.02).orElseThrow().hasHopperPair());
+                assertTrue(limelight.getNewHopperTarget(26, GOAL, 180, 10.02).isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void pairedPoseRequiresTheCorrectTwoIdsInOneFreshCompleteFrameOnEitherAlliance() {
+        for (int primary : new int[] {26, 10}) {
+            Pose2d goal = primary == 26 ? GOAL : new Pose2d(13.1, 4.0346376, Rotation2d.kZero);
+            double[] frame = pairedFrame(Limelight.companionTagId(primary), primary);
+            frame[0] = goal.getX();
+            frame[1] = goal.getY();
+            frame[5] = goal.getRotation().getDegrees();
+            assertTrue(Limelight.pairedTargetFromFrame(frame, 10_000_000, primary, goal,
+                Translation2d.kZero, 10.02).orElseThrow().hasHopperPair());
+            assertTrue(Limelight.pairedTargetFromFrame(frame, 9_000_000, primary, goal,
+                Translation2d.kZero, 10.02).isEmpty());
+            assertTrue(Limelight.pairedTargetFromFrame(frame, 11_000_000, primary, goal,
+                Translation2d.kZero, 10.02).isEmpty());
+            for (int scenario = 0; scenario < 6; scenario++) {
+                double[] invalid = frame.clone();
+                switch (scenario) {
+                    case 0 -> invalid[11] = primary; // Two copies of one tag do not form a pair.
+                    case 1 -> invalid[11] = 24; // Two tags, but the required companion is missing.
+                    case 2 -> invalid[17] = 0.8; // Ambiguous companion.
+                    case 3 -> invalid[12] = Double.NaN;
+                    case 4 -> invalid[12] = invalid[19]; // Degenerate angular separation.
+                    case 5 -> invalid = java.util.Arrays.copyOf(invalid, 24); // Incomplete raw block.
+                }
+                assertTrue(Limelight.pairedTargetFromFrame(invalid, 10_000_000, primary, goal,
+                    Translation2d.kZero, 10.02).isEmpty(), "Invalid paired frame scenario " + scenario);
+            }
+        }
+    }
+
+    private static double[] pairedFrame(int companion, int primary) {
+        return new double[] {GOAL.getX(), GOAL.getY(), 0, 0, 0, 180, 40, 2, 0.3556, 1, 0.2,
+            companion, -31, 0, 0.1, 1, 1, 0.1,
+            primary, -6, 0, 0.1, 1, 1, 0.1};
+    }
+
+    @Test
     void acquiresFromOneAtomicFieldFrameWithoutOtherLimelightStreams() {
         try (var instance = NetworkTableInstance.create()) {
             var limelight = new Limelight(instance, "test");

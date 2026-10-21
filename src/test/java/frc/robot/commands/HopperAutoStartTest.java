@@ -4,6 +4,7 @@ import static frc.robot.Constants.OdometryConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Optional;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -25,6 +26,8 @@ import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.kinematics.DifferentialDriveKinematics;
 import edu.wpi.first.wpilibj2.command.Commands;
 import frc.robot.subsystems.DriveSubsystem;
+import frc.robot.vision.HopperStartView;
+import frc.robot.vision.Limelight.TargetMeasurement;
 
 class HopperAutoStartTest {
     private static final AtomicBoolean RED = new AtomicBoolean();
@@ -32,6 +35,7 @@ class HopperAutoStartTest {
     private static boolean shooting;
     private static int visionAttempts;
     private static int pathOutputs;
+    private static final HopperStartView START_VIEW = new HopperStartView();
 
     @BeforeAll
     static void configureRealPathPlannerWithStationaryDrive() throws Exception {
@@ -41,7 +45,9 @@ class HopperAutoStartTest {
             (speeds, feedforwards) -> pathOutputs++, new PPLTVController(0.02),
             RobotConfig.fromGUISettings(), RED::get, drive);
         NamedCommands.registerCommand("hopperStart", Autos.hopperStart(
-            drive, drive, DriveSubsystem::getHopperCenterPose));
+            drive, drive, DriveSubsystem::getHopperCenterPose).andThen(
+                new CaptureHopperStartViewCommand(drive, drive, START_VIEW, DriveSubsystem::getHopperCenterPose,
+                    () -> RED.get() ? 10 : 26, () -> drive.now, () -> true)));
         // Pause at the first shot so no later path or return command can hide a startup error.
         NamedCommands.registerCommand("shoot", Commands.run(() -> shooting = true));
         NamedCommands.registerCommand("visionAlign", Commands.runOnce(() -> visionAttempts++));
@@ -72,9 +78,10 @@ class HopperAutoStartTest {
 
                 var auto = new PathPlannerAuto(name);
                 auto.initialize();
-                for (int loop = 0; loop < 4; loop++) {
+                for (int loop = 0; loop < 60 && !shooting; loop++) {
                     auto.execute();
                     drive.estimator.update(drive.rawGyro, 1.4, 2.5);
+                    drive.now += 0.02;
                 }
 
                 Pose2d blue = new Pose2d(kHopperCenterXMeters, kHopperTagCenterYMeters,
@@ -91,6 +98,11 @@ class HopperAutoStartTest {
                 assertTrue(shooting, "Known placement must release the auto directly to shooting");
                 assertEquals(0, visionAttempts, "Initial vision must not replace the known starting angle");
                 assertEquals(0, pathOutputs, "No path movement before the initial shot");
+                var saved = START_VIEW.getReference().orElseThrow();
+                assertEquals(red ? 10 : 26, saved.tagId());
+                assertEquals(6.0, saved.imageHorizontalDegrees(), 1e-9);
+                assertEquals(expected, saved.startingPose());
+                assertFalse(drive.active, "Startup capture must release vision before shooting");
                 auto.end(true);
             }
         }
@@ -117,6 +129,17 @@ class HopperAutoStartTest {
         public void resetOdometry(Pose2d pose) {
             estimator.resetPosition(rawGyro, 1.4, 2.5, pose);
             resets++;
+        }
+
+        @Override
+        public Optional<TargetMeasurement> getNewHopperTagPose(int tagId) {
+            if (now - lastFrame < 0.039) {
+                return Optional.empty();
+            }
+            lastFrame = now;
+            // An independent PnP yaw error must never tilt the trusted startup heading.
+            return Optional.of(new TargetMeasurement(tagId, 0, kHopperTagStandOffMeters,
+                now - 0.02, RED.get() ? -5 : 175, -0.04, 0.4, 6.0, -25.0, true));
         }
     }
 }

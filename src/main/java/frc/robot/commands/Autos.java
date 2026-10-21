@@ -90,7 +90,8 @@ public final class Autos {
     }
 
     /**
-     * Attempts to center on the hopper tag. Missing vision or an unsuccessful correction must
+     * Attempts to restore the startup tag view, using the known center if capture was unavailable.
+     * Missing vision or an unsuccessful correction must
      * finish this step so the autonomous routine can continue using its existing odometry.
      */
     public static Command visionAlign(DriveSubsystem drive) {

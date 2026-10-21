@@ -62,7 +62,8 @@ public class RobotContainer {
         // Same thing but ending on its own, for use as a step inside an auto's sequence.
         NamedCommands.registerCommand("intakeTimed", Autos.intakeWithTimeout(m_intake, m_loader));
         NamedCommands.registerCommand("hopperStart", Autos.hopperStart(
-            m_driveSubsystem, m_driveSubsystem, DriveSubsystem::getHopperCenterPose));
+            m_driveSubsystem, m_driveSubsystem, DriveSubsystem::getHopperCenterPose)
+                .andThen(m_driveSubsystem.captureHopperStartViewCommand()));
         // At Hopper Center: use Limelight to correct X/Y, drive back onto the spot, and restore heading
         NamedCommands.registerCommand("visionAlign", Autos.visionAlign(m_driveSubsystem));
         // Reacquire field position after the trench route before the final return to the hopper.
@@ -176,6 +177,7 @@ public class RobotContainer {
      * @return the command to run in autonomous
      */
     public Command getAutonomousCommand() {
+        m_driveSubsystem.clearHopperStartView();
         return m_autoChooser.getSelected();
     }
     

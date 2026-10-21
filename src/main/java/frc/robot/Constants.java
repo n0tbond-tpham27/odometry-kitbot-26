@@ -172,10 +172,6 @@ public final class Constants {
             kHopperTagCenterYMeters + kHopperDriverStationLeftOffsetMeters;
         /** Tag coordinates of the nominal path waypoint; independent of the camera aiming target. */
         public static final double kHopperPathRightReferenceMeters = -kHopperDriverStationLeftOffsetMeters;
-        /** Final camera alignment centers the tag itself, overriding the coarse path bias. */
-        public static final double kHopperCameraRightTargetMeters = 0.0;
-        /** Return-only shift to Driver Station left; startup remains centered and square. */
-        public static final double kHopperReturnLeftOffsetMeters = 0.50;
         /** Robot-center distance out from the tag face; retains the existing bumper clearance. */
         public static final double kHopperTagStandOffMeters = kHopperTagFaceXMeters - kHopperCenterXMeters;
         /** Heading at "Hopper Center": front facing directly away from the hopper, toward the alliance wall. */
@@ -186,10 +182,16 @@ public final class Constants {
         /** Name of the Limelight, as set in its web interface (default "limelight"). */
         public static final String kLimelightName = "limelight";
         public static final int kBlueHopperTagId = 26;
+        public static final int kBlueHopperCompanionTagId = 25;
         /** Rotationally corresponding tag on the red hub face. */
         public static final int kRedHopperTagId = 10;
+        public static final int kRedHopperCompanionTagId = 9;
+        public static final double kHopperPairMinImageSeparationDegrees = 2.0;
         public static final int kHopperTagAcquireFrames = 3;
         public static final int kHopperTagConfirmFrames = 3;
+        public static final double kHopperStartViewCaptureTimeoutSeconds = 0.8;
+        public static final double kHopperStartViewMaxRangeSpreadMeters = 0.03;
+        public static final double kHopperStartViewMaxAngleSpreadDegrees = 1.0;
         public static final double kHopperImageCenterToleranceDegrees = 1.5;
         public static final double kHopperTagAcquireTimeoutSeconds = 1.2;
         public static final double kHopperTagMaxSpreadMeters = 0.08;
@@ -345,10 +347,8 @@ public final class Constants {
         public static final double kHopperAlignToleranceMeters = 0.03;
         /** Finish the sideways correction before accepting the final stand-off position. */
         public static final double kHopperAlignLateralToleranceMeters = 0.012;
-        /** Tiny final aiming corrections after physical centering; never a large pivot at the hub. */
-        public static final double kHopperImageFineTurnMaxRadPerSec = 0.25;
         /** Final facing direction and initial turn must be within this angle (radians). */
-        public static final double kHopperAlignHeadingToleranceRadians = Math.toRadians(2.0);
+        public static final double kHopperAlignHeadingToleranceRadians = Math.toRadians(0.5);
         /** Slow corrections near the hopper, using forward or reverse as needed. */
         public static final double kHopperAlignMaxSpeedMetersPerSecond = 0.4;
         public static final double kHopperAlignMaxTurnRateRadPerSec = 1.0;
@@ -359,7 +359,7 @@ public final class Constants {
         public static final double kHopperAlignTurnSpeedToleranceRadPerSec = 0.1;
         /** Bound the whole correction, including turns and settling, if the robot cannot reach the spot. */
         public static final double kHopperAlignTimeoutSeconds = 10.0;
-        /** The 50 cm return offset may require extra forward clearance at the same slow speed. */
+        /** Restoring the startup view may require extra forward clearance at the same slow speed. */
         public static final double kHopperReturnAlignTimeoutSeconds = 18.0;
         /** Make room to steer a reverse arc if lateral correction is needed close to the hopper. */
         public static final double kHopperAlignClearanceMeters = 0.65;

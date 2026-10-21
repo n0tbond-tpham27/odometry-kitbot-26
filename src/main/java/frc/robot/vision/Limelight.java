@@ -37,7 +37,13 @@ public class Limelight {
     /** Robot and camera positions relative to the selected tag's center, independent of odometry. */
     public record TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
             double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters,
-            double imageHorizontalDegrees) {
+            double imageHorizontalDegrees, double companionImageHorizontalDegrees, boolean hasHopperPair) {
+        public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
+                double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters,
+                double imageHorizontalDegrees) {
+            this(tagId, rightMeters, outwardMeters, timestampSeconds, fieldHeadingDegrees,
+                cameraRightMeters, cameraOutwardMeters, imageHorizontalDegrees, Double.NaN, false);
+        }
         public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
                 double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters) {
             this(tagId, rightMeters, outwardMeters, timestampSeconds, fieldHeadingDegrees,
@@ -50,6 +56,13 @@ public class Limelight {
 
         public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds) {
             this(tagId, rightMeters, outwardMeters, timestampSeconds, Double.NaN);
+        }
+
+        public Pose2d toFieldPose(Pose2d reference) {
+            Translation2d local = new Translation2d(outwardMeters - kHopperTagStandOffMeters,
+                rightMeters - kHopperPathRightReferenceMeters);
+            return new Pose2d(reference.getTranslation().plus(local.rotateBy(reference.getRotation())),
+                Double.isFinite(fieldHeadingDegrees) ? Rotation2d.fromDegrees(fieldHeadingDegrees) : reference.getRotation());
         }
     }
 
@@ -72,6 +85,7 @@ public class Limelight {
     private String m_hopperSource = "waiting for vision";
     private final edu.wpi.first.networktables.DoublePublisher m_priorityPub;
     private long m_lastTargetTimestampMicros = 0;
+    private long m_lastPairTimestampMicros = 0;
     /** NetworkTables timestamp of the last result returned, so each frame is used only once. */
     private long m_lastTimestampMicros = 0;
 
@@ -100,12 +114,24 @@ public class Limelight {
         m_priorityPub = table.getDoubleTopic("priorityid").publish();
     }
 
-    /** Prefer one complete MegaTag2 frame; single-target PnP remains a fallback. */
+    /** Prefer the independent two-tag pose; other sources are marked as unpaired. */
     public Optional<TargetMeasurement> getNewHopperTarget(int tagId, Pose2d goal, double gyroHeadingDegrees, double now) {
         double[] mount = m_cameraRobotPoseSub.get();
         if (mount.length >= 6 && Double.isFinite(mount[0]) && Double.isFinite(mount[1])) {
             // Limelight robot-space Y is right-positive; WPILib robot-space Y is left-positive.
             m_cameraOffsetRobot = new Translation2d(mount[0], -mount[1]);
+        }
+        // MegaTag1's multi-tag solution independently measures robot yaw. MegaTag2 uses
+        // the gyro heading we supplied, so it cannot resolve yaw-versus-lateral error here.
+        TimestampedDoubleArray pairFrame = m_tagFieldPoseSub.getAtomic();
+        if (pairFrame.timestamp != m_lastPairTimestampMicros) {
+            Optional<TargetMeasurement> pair = pairedTargetFromFrame(pairFrame.value, pairFrame.timestamp,
+                tagId, goal, m_cameraOffsetRobot, now);
+            if (pair.isPresent()) {
+                m_lastPairTimestampMicros = pairFrame.timestamp;
+                m_hopperSource = "MegaTag1 paired pose: " + companionTagId(tagId) + " + " + tagId;
+                return pair;
+            }
         }
         Optional<PoseMeasurement> field = getNewPose();
         if (field.isPresent()) {
@@ -179,7 +205,48 @@ public class Limelight {
     private static TargetMeasurement withImageAngle(TargetMeasurement target, double angle) {
         return new TargetMeasurement(target.tagId(), target.rightMeters(), target.outwardMeters(),
             target.timestampSeconds(), target.fieldHeadingDegrees(), target.cameraRightMeters(),
-            target.cameraOutwardMeters(), angle);
+            target.cameraOutwardMeters(), angle, target.companionImageHorizontalDegrees(), target.hasHopperPair());
+    }
+
+    public static int companionTagId(int tagId) {
+        return tagId == kBlueHopperTagId ? kBlueHopperCompanionTagId
+            : tagId == kRedHopperTagId ? kRedHopperCompanionTagId : -1;
+    }
+
+    static Optional<TargetMeasurement> pairedTargetFromFrame(double[] data, long timestampMicros,
+            int tagId, Pose2d goal, Translation2d cameraOffset, double now) {
+        Optional<PoseMeasurement> parsed = parseFieldPose(data, timestampMicros);
+        if (companionTagId(tagId) < 0 || parsed.isEmpty() || parsed.get().tagCount() < 2) {
+            return Optional.empty();
+        }
+        PoseMeasurement frame = parsed.get();
+        double mainAngle = Double.NaN;
+        double companionAngle = Double.NaN;
+        for (int i = 0; i < frame.tagCount(); i++) {
+            int base = kMinLength + i * kValuesPerTag;
+            if (base + 6 >= data.length || !Double.isFinite(data[base + 6])
+                    || data[base + 6] < 0.0 || data[base + 6] > 0.4) {
+                continue;
+            }
+            if (data[base] == tagId) {
+                mainAngle = data[base + 1];
+            } else if (data[base] == companionTagId(tagId)) {
+                companionAngle = data[base + 1];
+            }
+        }
+        if (!validImageAngle(mainAngle) || !validImageAngle(companionAngle)
+                || Math.abs(mainAngle - companionAngle) < kHopperPairMinImageSeparationDegrees) {
+            return Optional.empty();
+        }
+        Optional<TargetMeasurement> target = targetFromFieldPose(frame, tagId, goal,
+            frame.pose().getRotation().getDegrees(), cameraOffset, now);
+        if (target.isEmpty()) {
+            return target;
+        }
+        TargetMeasurement value = target.get();
+        return Optional.of(new TargetMeasurement(tagId, value.rightMeters(), value.outwardMeters(),
+            value.timestampSeconds(), value.fieldHeadingDegrees(), value.cameraRightMeters(),
+            value.cameraOutwardMeters(), mainAngle, companionAngle, true));
     }
 
     /** Select the hopper tag for single-target measurements without filtering field localization. */
@@ -271,7 +338,13 @@ public class Limelight {
             return Optional.empty();
         }
         m_lastTimestampMicros = result.timestamp;
+        return parseFieldPose(data, result.timestamp);
+    }
 
+    private static Optional<PoseMeasurement> parseFieldPose(double[] data, long timestampMicros) {
+        if (data.length < kMinLength || timestampMicros <= 0) {
+            return Optional.empty();
+        }
         if (!Double.isFinite(data[kTagCountIndex]) || data[kTagCountIndex] < 1.0 || data[kTagCountIndex] > 64.0
                 || !Double.isFinite(data[kLatencyIndex]) || data[kLatencyIndex] < 0.0
                 || !Double.isFinite(data[0]) || !Double.isFinite(data[1]) || !Double.isFinite(data[5])) {
@@ -279,7 +352,7 @@ public class Limelight {
         }
         int tagCount = (int) data[kTagCountIndex];
         // The picture was taken this long before the result reached the robot
-        double timestampSeconds = result.timestamp / 1e6 - data[kLatencyIndex] / 1000.0;
+        double timestampSeconds = timestampMicros / 1e6 - data[kLatencyIndex] / 1000.0;
         Pose2d pose = new Pose2d(data[0], data[1], Rotation2d.fromDegrees(data[5]));
         int[] tagIds = new int[tagCount];
         double[] tagHorizontalDegrees = new double[tagCount];
