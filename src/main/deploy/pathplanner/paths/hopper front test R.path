@@ -9,7 +9,7 @@
       "prevControl": null,
       "nextControl": {
         "x": 1.8935660091047044,
-        "y": 3.9814054300455225
+        "y": 3.9814054300455224
       },
       "isLocked": false,
       "linkedName": "Hopper Center"
@@ -117,7 +117,7 @@
       },
       "prevControl": {
         "x": 3.944886191198785,
-        "y": 4.021329557511382
+        "y": 4.0213295575113825
       },
       "nextControl": null,
       "isLocked": false,
@@ -156,7 +156,7 @@
   "folder": null,
   "idealStartingState": {
     "velocity": 0,
-    "rotation": 0.0
+    "rotation": 180.0
   },
   "useDefaultConstraints": true
 }

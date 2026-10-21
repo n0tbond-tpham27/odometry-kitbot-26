@@ -109,6 +109,8 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     private VisionPoseReacquisition m_activeVisionReacquisition = null;
     private boolean m_hopperTagAlignmentActive = false;
     private boolean m_hopperTagAligned = false;
+    private boolean m_hopperPoseAcquired = false;
+    private boolean m_hopperReturnActive = false;
     /** Gyro heading (radians) at the last encoder reset; the virtual left encoder is measured from here. */
     private double m_headingAtResetRadians = 0.0;
     /** Raw encoder reading at the last reset; subtracted out so distances start from zero. */
@@ -399,6 +401,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     public void resetOdometry(Pose2d pose) {
         m_poseEstimator.resetPosition(
             getHeadingRotation2d(), getLeftDistanceMeters(), getRightDistanceMeters(), pose);
+        m_field.setRobotPose(pose);
         markMeasurement(); // the pose just jumped, so start measuring from the new one
     }
 
@@ -648,7 +651,20 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     /** Drives at the requested robot-relative speeds (what PathPlanner outputs). */
     public void driveRobotRelative(ChassisSpeeds speeds) {
+        if (m_hopperReturnActive) {
+            // PathPlanner feedback can request more than a path's nominal velocity limit.
+            // Apply the return limits at the drivetrain output for the fallback as well.
+            speeds = new ChassisSpeeds(
+                MathUtil.clamp(speeds.vxMetersPerSecond, -kHopperApproachMaxSpeedMetersPerSecond,
+                    kHopperAlignClearanceSpeedMetersPerSecond), 0.0,
+                MathUtil.clamp(speeds.omegaRadiansPerSecond,
+                    -kHopperAlignMaxTurnRateRadPerSec, kHopperAlignMaxTurnRateRadPerSec));
+        }
         setSpeeds(m_kinematics.toWheelSpeeds(speeds));
+    }
+
+    public void setHopperReturnActive(boolean active) {
+        m_hopperReturnActive = active;
     }
 
    
@@ -833,20 +849,50 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
             .withName("Reset Pose To Vision");
     }
 
-    /** Center the camera on blue tag 26 (red tag 10), independent of the normal odometry jump gate. */
+    /** Align to the configured hopper offset using tag 26 (red tag 10), independent of the odometry jump gate. */
     public Command alignToHopperCenterCommand() {
+        return alignToHopperCenterCommand(kHopperAlignMaxSpeedMetersPerSecond);
+    }
+
+    public Command alignToHopperCenterCommand(double maxSpeed) {
+        return alignToHopperCommand(maxSpeed, 0.0);
+    }
+
+    /** Autonomous returns use a separate lateral target without changing the known startup pose. */
+    public Command alignToHopperReturnCommand(double maxSpeed) {
+        return alignToHopperCommand(maxSpeed, kHopperReturnLeftOffsetMeters);
+    }
+
+    private Command alignToHopperCommand(double maxSpeed, double leftOffsetMeters) {
         return Commands.defer(() -> new HopperTagAlignmentCommand(
             this, this, getHopperCenterPose(), AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId,
-            Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true)), Set.of(this))
+            Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed,
+            leftOffsetMeters), Set.of(this))
             .withName("Align On Hopper Tag");
+    }
+
+    @Override
+    public void reportHopperLeftTarget(double meters) {
+        SmartDashboard.putNumber("Vision/Hopper Left Target (m)", meters);
+        SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", Math.abs(meters) < 1e-9 ? 0.0 : Double.NaN);
+        SmartDashboard.putString("Vision/Hopper Alignment Target", Math.abs(meters) < 1e-9
+            ? "tag image center" : meters + " m to Driver Station left");
+        Pose2d reference = getHopperCenterPose();
+        m_field.getObject("Hopper Target").setPose(new Pose2d(reference.getTranslation().plus(
+            new Translation2d(0.0, -meters).rotateBy(reference.getRotation())), reference.getRotation()));
     }
 
     @Override
     public void beginHopperTagAlignment(int tagId) {
         m_hopperTagAlignmentActive = true;
         m_hopperTagAligned = false;
+        m_hopperPoseAcquired = false;
         m_limelight.setPriorityTagId(tagId);
         SmartDashboard.putNumber("Vision/Hopper Tag ID", tagId);
+        SmartDashboard.putNumber("Vision/Hopper Path Left Bias (m)", kHopperDriverStationLeftOffsetMeters);
+        SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", 0.0);
+        SmartDashboard.putNumber("Vision/Hopper Image Tolerance (deg)", kHopperImageCenterToleranceDegrees);
+        SmartDashboard.putNumber("Vision/Hopper Image Error (deg)", Double.NaN);
         m_field.getObject("Hopper Target").setPose(getHopperCenterPose());
     }
 
@@ -858,12 +904,20 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     @Override
     public Optional<TargetMeasurement> getNewHopperTagPose(int tagId) {
-        return m_limelight.getNewTargetPose(tagId);
+        Optional<TargetMeasurement> result = m_limelight.getNewHopperTarget(tagId, getHopperCenterPose(),
+            getPose().getRotation().getDegrees(), Timer.getFPGATimestamp());
+        SmartDashboard.putString("Vision/Hopper Measurement Source", m_limelight.getHopperSource());
+        return result;
+    }
+
+    @Override
+    public void reportHopperImageError(double degrees) {
+        SmartDashboard.putNumber("Vision/Hopper Image Error (deg)", degrees);
     }
 
     @Override
     public void fuseHopperTagPose(Pose2d pose, double timestampSeconds) {
-        m_poseEstimator.addVisionMeasurement(pose, timestampSeconds, VecBuilder.fill(0.04, 0.04, 9999999));
+        m_poseEstimator.addVisionMeasurement(pose, timestampSeconds, VecBuilder.fill(0.015, 0.015, 9999999));
     }
 
     @Override
@@ -876,6 +930,15 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     public boolean isHopperTagAligned() {
         return m_hopperTagAligned;
+    }
+
+    @Override
+    public void onHopperPoseAcquired() {
+        m_hopperPoseAcquired = true;
+    }
+
+    public boolean wasHopperPoseAcquired() {
+        return m_hopperPoseAcquired;
     }
 
     @Override

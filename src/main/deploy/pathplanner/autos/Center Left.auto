@@ -7,6 +7,42 @@
         {
           "type": "named",
           "data": {
+            "name": "hopperStart"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "hopper front test L"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "postTrenchRelocalize"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "resetBack"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
             "name": "visionAlign"
           }
         },
@@ -35,45 +71,9 @@
           }
         },
         {
-          "type": "path",
-          "data": {
-            "pathName": "reset back"
-          }
-        },
-        {
           "type": "named",
           "data": {
-            "name": "visionAlign"
-          }
-        },
-        {
-          "type": "named",
-          "data": {
-            "name": "shoot"
-          }
-        },
-        {
-          "type": "named",
-          "data": {
-            "name": "shoot"
-          }
-        },
-        {
-          "type": "path",
-          "data": {
-            "pathName": "hopper front test L"
-          }
-        },
-        {
-          "type": "named",
-          "data": {
-            "name": "postTrenchRelocalize"
-          }
-        },
-        {
-          "type": "path",
-          "data": {
-            "pathName": "reset back"
+            "name": "resetBack"
           }
         },
         {
@@ -85,7 +85,7 @@
       ]
     }
   },
-  "resetOdom": true,
+  "resetOdom": false,
   "folder": null,
   "choreoAuto": false
 }

@@ -11,10 +11,45 @@ import frc.robot.subsystems.ExampleSubsystem;
 import frc.robot.subsystems.Flywheel;
 import frc.robot.subsystems.IntakeClass;
 import frc.robot.subsystems.Loader;
+
+import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+
+import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.path.PathPlannerPath;
+
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
+import edu.wpi.first.wpilibj2.command.Subsystem;
 
 public final class Autos {
+    private static final Set<String> HOPPER_CENTER_AUTOS = Set.of(
+        "Center Left", "Center Left 2x", "Center Left 3x",
+        "Center Right", "Center Right 2x", "Center Right 3x");
+
+    public static boolean startsAtHopperCenter(String autoName) {
+        return HOPPER_CENTER_AUTOS.contains(autoName);
+    }
+
+    /** Trust the team's centered, square placement; leave subsequent vision corrections to the return. */
+    public static Command hopperStart(HopperTagAlignmentCommand.IO drive, Subsystem requirement,
+            Supplier<Pose2d> startingPose) {
+        return Commands.runOnce(() -> {
+            drive.stopMotors();
+            Pose2d pose = startingPose.get();
+            // resetOdometry records the current raw gyro as the baseline for this field angle.
+            drive.resetOdometry(pose);
+            SmartDashboard.putString("Auto/Start Pose Source", "known centered hopper placement");
+            SmartDashboard.putNumber("Auto/Start X (m)", pose.getX());
+            SmartDashboard.putNumber("Auto/Start Y (m)", pose.getY());
+            SmartDashboard.putNumber("Auto/Start Heading (deg)", pose.getRotation().getDegrees());
+        }, requirement).withName("hopperStart");
+    }
+
     /** Example static factory for an autonomous command. */
     public static Command exampleAuto(ExampleSubsystem subsystem) {
         return Commands.sequence(subsystem.exampleMethodCommand(), new ExampleCommand(subsystem));
@@ -55,14 +90,70 @@ public final class Autos {
     }
 
     /**
-     * Centers physically on the hopper's selected AprilTag and confirms the result with fresh
-     * target-relative measurements. If alignment fails, holds the drivetrain so the next path
-     * cannot depart from a known unconfirmed position. Disable/cancel the auto to release the hold.
+     * Attempts to center on the hopper tag. Missing vision or an unsuccessful correction must
+     * finish this step so the autonomous routine can continue using its existing odometry.
      */
     public static Command visionAlign(DriveSubsystem drive) {
-        return drive.alignToHopperCenterCommand().andThen(Commands.either(
-            Commands.none(), drive.run(drive::stopMotors).withName("Hold: Hopper Tag Not Centered"),
-            drive::isHopperTagAligned)).withName("visionAlign");
+        return boundedVisionAlign(drive.alignToHopperReturnCommand(
+                AutoConstants.kHopperApproachMaxSpeedMetersPerSecond), drive::stopMotors,
+                AutoConstants.kHopperReturnAlignTimeoutSeconds)
+            .andThen(Commands.runOnce(() -> {
+                boolean aligned = drive.isHopperTagAligned();
+                SmartDashboard.putBoolean("Auto/Vision Correction Applied", aligned);
+                SmartDashboard.putString("Auto/Vision Align Status", aligned ? "aligned"
+                    : "continuing with odometry: " + SmartDashboard.getString("Vision/Align Status", "vision unavailable"));
+            }))
+            .withName("visionAlign");
+    }
+
+    /** The auto always gets its drivetrain back, even if an alignment command never finishes. */
+    static Command boundedVisionAlign(Command attempt, Runnable stopDrive) {
+        return boundedVisionAlign(attempt, stopDrive, AutoConstants.kHopperAlignTimeoutSeconds);
+    }
+
+    static Command boundedVisionAlign(Command attempt, Runnable stopDrive, double timeoutSeconds) {
+        return attempt.withTimeout(timeoutSeconds).finallyDo(stopDrive);
+    }
+
+    /** Correct lateral drift during the return, using a slow straight path only if vision never acquires. */
+    public static Command resetBack(DriveSubsystem drive, String fallbackPathName) {
+        return Commands.defer(() -> {
+            try {
+                PathPlannerPath path = PathPlannerPath.fromPathFile(fallbackPathName);
+                Command fallback = Commands.runOnce(() -> SmartDashboard.putString(
+                    "Auto/Return Mode", "slow odometry fallback: no usable vision"))
+                    .andThen(AutoBuilder.followPath(path)).finallyDo(drive::stopMotors);
+                return Commands.runOnce(() -> SmartDashboard.putString("Auto/Return Mode", "vision-guided reverse"))
+                    .andThen(boundedVisionAlign(drive.alignToHopperReturnCommand(
+                        AutoConstants.kHopperApproachMaxSpeedMetersPerSecond), drive::stopMotors,
+                        AutoConstants.kHopperReturnAlignTimeoutSeconds))
+                    .andThen(returnAfterVision(fallback, drive::isHopperTagAligned,
+                        drive::wasHopperPoseAcquired, drive::stopMotors));
+            } catch (Exception exception) {
+                return drive.runOnce(() -> {
+                    drive.stopMotors();
+                    DriverStation.reportError("Cannot load hopper return: " + exception.getMessage(), false);
+                });
+            }
+        }, Set.of(drive))
+            .beforeStarting(() -> drive.setHopperReturnActive(true))
+            .finallyDo(() -> {
+                drive.stopMotors();
+                drive.setHopperReturnActive(false);
+            }).withName("Vision Guided Reset Back");
+    }
+
+    /** Never start a blind return after a partial vision-guided maneuver. */
+    static Command returnAfterVision(Command fallback, BooleanSupplier aligned,
+            BooleanSupplier acquired, Runnable stopDrive) {
+        return Commands.either(
+            Commands.runOnce(() -> SmartDashboard.putString("Auto/Return Mode", "vision confirmed")),
+            Commands.either(
+                Commands.runOnce(() -> {
+                    stopDrive.run();
+                    SmartDashboard.putString("Auto/Return Mode", "correction incomplete; stopped");
+                }), fallback, acquired),
+            aligned);
     }
 
     /**

@@ -3,9 +3,11 @@ package frc.robot.vision;
 import java.util.Optional;
 
 import static frc.robot.Constants.VisionConstants.*;
+import static frc.robot.Constants.OdometryConstants.*;
 
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.networktables.DoubleArrayPublisher;
 import edu.wpi.first.networktables.DoubleArraySubscriber;
 import edu.wpi.first.networktables.NetworkTable;
@@ -24,11 +26,23 @@ import edu.wpi.first.networktables.TimestampedDoubleArray;
 public class Limelight {
     /** A robot position measured from AprilTags, ready for addVisionMeasurement(). */
     public record PoseMeasurement(
-        Pose2d pose, double timestampSeconds, int tagCount, double avgTagDistanceMeters, int[] tagIds) {}
+        Pose2d pose, double timestampSeconds, int tagCount, double avgTagDistanceMeters, int[] tagIds,
+        double[] tagHorizontalDegrees) {
+        public PoseMeasurement(Pose2d pose, double timestampSeconds, int tagCount,
+                double avgTagDistanceMeters, int[] tagIds) {
+            this(pose, timestampSeconds, tagCount, avgTagDistanceMeters, tagIds, new double[0]);
+        }
+    }
 
     /** Robot and camera positions relative to the selected tag's center, independent of odometry. */
     public record TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
-            double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters) {
+            double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters,
+            double imageHorizontalDegrees) {
+        public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
+                double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters) {
+            this(tagId, rightMeters, outwardMeters, timestampSeconds, fieldHeadingDegrees,
+                cameraRightMeters, cameraOutwardMeters, Double.NaN);
+        }
         public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
                 double fieldHeadingDegrees) {
             this(tagId, rightMeters, outwardMeters, timestampSeconds, fieldHeadingDegrees, rightMeters, outwardMeters);
@@ -53,13 +67,20 @@ public class Limelight {
     private final DoubleArraySubscriber m_cameraTargetPoseSub;
     private final DoubleArraySubscriber m_targetStatsSub;
     private final DoubleArraySubscriber m_tagFieldPoseSub;
+    private final DoubleArraySubscriber m_cameraRobotPoseSub;
+    private Translation2d m_cameraOffsetRobot = Translation2d.kZero;
+    private String m_hopperSource = "waiting for vision";
     private final edu.wpi.first.networktables.DoublePublisher m_priorityPub;
     private long m_lastTargetTimestampMicros = 0;
     /** NetworkTables timestamp of the last result returned, so each frame is used only once. */
     private long m_lastTimestampMicros = 0;
 
     public Limelight(String name) {
-        NetworkTable table = NetworkTableInstance.getDefault().getTable(name);
+        this(NetworkTableInstance.getDefault(), name);
+    }
+
+    Limelight(NetworkTableInstance instance, String name) {
+        NetworkTable table = instance.getTable(name);
         // Robot position in blue-origin field coordinates, i.e. the same as our odometry
         // keepDuplicates: a new frame that happens to give the exact same numbers still counts
         m_botPoseSub = table.getDoubleArrayTopic("botpose_orb_wpiblue")
@@ -75,7 +96,90 @@ public class Limelight {
         // MegaTag1 supplies an independent heading for initial gyro alignment; MegaTag2 cannot.
         m_tagFieldPoseSub = table.getDoubleArrayTopic("botpose_wpiblue")
             .subscribe(new double[0], PubSubOption.keepDuplicates(true));
+        m_cameraRobotPoseSub = table.getDoubleArrayTopic("camerapose_robotspace").subscribe(new double[0]);
         m_priorityPub = table.getDoubleTopic("priorityid").publish();
+    }
+
+    /** Prefer one complete MegaTag2 frame; single-target PnP remains a fallback. */
+    public Optional<TargetMeasurement> getNewHopperTarget(int tagId, Pose2d goal, double gyroHeadingDegrees, double now) {
+        double[] mount = m_cameraRobotPoseSub.get();
+        if (mount.length >= 6 && Double.isFinite(mount[0]) && Double.isFinite(mount[1])) {
+            // Limelight robot-space Y is right-positive; WPILib robot-space Y is left-positive.
+            m_cameraOffsetRobot = new Translation2d(mount[0], -mount[1]);
+        }
+        Optional<PoseMeasurement> field = getNewPose();
+        if (field.isPresent()) {
+            Optional<TargetMeasurement> target = targetFromFieldPose(field.get(), tagId, goal,
+                gyroHeadingDegrees, m_cameraOffsetRobot, now);
+            if (target.isPresent()) {
+                m_hopperSource = "MegaTag2 field pose " + java.util.Arrays.toString(field.get().tagIds());
+                // Older firmware may omit the per-tag block. A matching t2d capture still
+                // supplies the selected tag's image position without delaying localization.
+                if (!Double.isFinite(target.get().imageHorizontalDegrees())) {
+                    TimestampedDoubleArray stats = m_targetStatsSub.getAtomic();
+                    double angle = imageAngleFromStats(stats.value, stats.timestamp,
+                        m_lastTimestampMicros, tagId);
+                    return Optional.of(withImageAngle(target.get(), angle));
+                }
+                return target;
+            }
+        }
+        Optional<TargetMeasurement> direct = getNewTargetPose(tagId);
+        m_hopperSource = direct.isPresent() ? "tag-relative PnP" : "waiting for usable field or tag pose";
+        return direct;
+    }
+
+    public String getHopperSource() {
+        return m_hopperSource;
+    }
+
+    static Optional<TargetMeasurement> targetFromFieldPose(PoseMeasurement frame, int tagId, Pose2d goal,
+            double headingDegrees, Translation2d cameraOffsetRobot, double now) {
+        double age = now - frame.timestampSeconds();
+        if (frame.tagCount() < 1 || !Double.isFinite(age) || age > kMaxVisionAgeSeconds
+                || age < -kVisionFutureToleranceSeconds || !Double.isFinite(headingDegrees)
+                || !Double.isFinite(frame.pose().getX()) || !Double.isFinite(frame.pose().getY())
+                || !Double.isFinite(frame.avgTagDistanceMeters()) || frame.avgTagDistanceMeters() < 0.0
+                || frame.avgTagDistanceMeters() > kMaxTagDistanceMeters
+                || frame.pose().getX() < 0.0 || frame.pose().getX() > kFieldLengthMeters
+                || frame.pose().getY() < 0.0 || frame.pose().getY() > kFieldWidthMeters) {
+            return Optional.empty();
+        }
+        Pose2d robot = new Pose2d(frame.pose().getTranslation(), Rotation2d.fromDegrees(headingDegrees));
+        Pose2d relative = robot.relativeTo(goal);
+        Pose2d camera = new Pose2d(robot.getTranslation().plus(cameraOffsetRobot.rotateBy(robot.getRotation())),
+            robot.getRotation()).relativeTo(goal);
+        double right = relative.getY() + kHopperPathRightReferenceMeters;
+        double outward = relative.getX() + kHopperTagStandOffMeters;
+        if (Math.abs(right) > kHopperTagMaxLateralMeters || outward <= 0.1 || outward > kHopperTagMaxRangeMeters) {
+            return Optional.empty();
+        }
+        // The field pose can use any mapped tag, keeping feedback alive when tag 26 leaves
+        // the image during a correction. tagId identifies the target reference, not the observed IDs.
+        double imageAngle = Double.NaN;
+        for (int i = 0; i < frame.tagIds().length && i < frame.tagHorizontalDegrees().length; i++) {
+            if (frame.tagIds()[i] == tagId && validImageAngle(frame.tagHorizontalDegrees()[i])) {
+                imageAngle = frame.tagHorizontalDegrees()[i];
+                break;
+            }
+        }
+        return Optional.of(new TargetMeasurement(tagId, right, outward, frame.timestampSeconds(), headingDegrees,
+            camera.getY() + kHopperPathRightReferenceMeters, camera.getX() + kHopperTagStandOffMeters, imageAngle));
+    }
+
+    private static boolean validImageAngle(double angle) {
+        return Double.isFinite(angle) && Math.abs(angle) < 70.0;
+    }
+
+    private static double imageAngleFromStats(double[] stats, long timestamp, long poseTimestamp, int tagId) {
+        return stats.length >= 10 && timestamp > 0 && Math.abs(timestamp - poseTimestamp) <= 20000
+            && stats[0] == 1.0 && stats[9] == tagId && validImageAngle(stats[6]) ? stats[6] : Double.NaN;
+    }
+
+    private static TargetMeasurement withImageAngle(TargetMeasurement target, double angle) {
+        return new TargetMeasurement(target.tagId(), target.rightMeters(), target.outwardMeters(),
+            target.timestampSeconds(), target.fieldHeadingDegrees(), target.cameraRightMeters(),
+            target.cameraOutwardMeters(), angle);
     }
 
     /** Select the hopper tag for single-target measurements without filtering field localization. */
@@ -112,7 +216,7 @@ public class Limelight {
             && Math.abs(cameraPose[0]) <= kHopperTagMaxLateralMeters;
         return new TargetMeasurement(measurement.tagId(), measurement.rightMeters(), measurement.outwardMeters(),
             measurement.timestampSeconds(), measurement.fieldHeadingDegrees(),
-            valid ? cameraPose[0] : Double.NaN, valid ? cameraPose[2] : Double.NaN);
+            valid ? cameraPose[0] : Double.NaN, valid ? cameraPose[2] : Double.NaN, measurement.imageHorizontalDegrees());
     }
 
     static TargetMeasurement withFieldHeading(TargetMeasurement measurement, long poseTimestampMicros,
@@ -127,7 +231,7 @@ public class Limelight {
         }
         return new TargetMeasurement(measurement.tagId(), measurement.rightMeters(), measurement.outwardMeters(),
             measurement.timestampSeconds(), valid ? fieldPose[5] : Double.NaN,
-            measurement.cameraRightMeters(), measurement.cameraOutwardMeters());
+            measurement.cameraRightMeters(), measurement.cameraOutwardMeters(), measurement.imageHorizontalDegrees());
     }
 
     static Optional<TargetMeasurement> parseTargetPose(
@@ -144,7 +248,9 @@ public class Limelight {
         }
         // Limelight target axes: +X right when looking at the tag, +Z out of its face.
         double captureSeconds = poseTimestampMicros / 1e6 - (stats[2] + stats[3]) / 1000.0;
-        return Optional.of(new TargetMeasurement(requiredTagId, pose[0], pose[2], captureSeconds));
+        return Optional.of(new TargetMeasurement(requiredTagId, pose[0], pose[2], captureSeconds,
+            Double.NaN, Double.NaN, Double.NaN,
+            imageAngleFromStats(stats, statsTimestampMicros, poseTimestampMicros, requiredTagId)));
     }
 
     /**
@@ -166,18 +272,25 @@ public class Limelight {
         }
         m_lastTimestampMicros = result.timestamp;
 
-        int tagCount = (int) data[kTagCountIndex];
-        if (tagCount == 0) {
+        if (!Double.isFinite(data[kTagCountIndex]) || data[kTagCountIndex] < 1.0 || data[kTagCountIndex] > 64.0
+                || !Double.isFinite(data[kLatencyIndex]) || data[kLatencyIndex] < 0.0
+                || !Double.isFinite(data[0]) || !Double.isFinite(data[1]) || !Double.isFinite(data[5])) {
             return Optional.empty();
         }
+        int tagCount = (int) data[kTagCountIndex];
         // The picture was taken this long before the result reached the robot
         double timestampSeconds = result.timestamp / 1e6 - data[kLatencyIndex] / 1000.0;
         Pose2d pose = new Pose2d(data[0], data[1], Rotation2d.fromDegrees(data[5]));
         int[] tagIds = new int[tagCount];
+        double[] tagHorizontalDegrees = new double[tagCount];
+        java.util.Arrays.fill(tagHorizontalDegrees, Double.NaN);
         for (int i = 0; i < tagCount && kMinLength + i * kValuesPerTag < data.length; i++) {
             tagIds[i] = (int) data[kMinLength + i * kValuesPerTag];
+            if (kMinLength + i * kValuesPerTag + 1 < data.length) {
+                tagHorizontalDegrees[i] = data[kMinLength + i * kValuesPerTag + 1];
+            }
         }
         return Optional.of(new PoseMeasurement(
-            pose, timestampSeconds, tagCount, data[kAvgDistanceIndex], tagIds));
+            pose, timestampSeconds, tagCount, data[kAvgDistanceIndex], tagIds, tagHorizontalDegrees));
     }
 }

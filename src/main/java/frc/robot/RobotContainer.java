@@ -61,10 +61,15 @@ public class RobotContainer {
         NamedCommands.registerCommand("intake", Autos.intake(m_intake, m_loader));
         // Same thing but ending on its own, for use as a step inside an auto's sequence.
         NamedCommands.registerCommand("intakeTimed", Autos.intakeWithTimeout(m_intake, m_loader));
+        NamedCommands.registerCommand("hopperStart", Autos.hopperStart(
+            m_driveSubsystem, m_driveSubsystem, DriveSubsystem::getHopperCenterPose));
         // At Hopper Center: use Limelight to correct X/Y, drive back onto the spot, and restore heading
         NamedCommands.registerCommand("visionAlign", Autos.visionAlign(m_driveSubsystem));
         // Reacquire field position after the trench route before the final return to the hopper.
         NamedCommands.registerCommand("postTrenchRelocalize", m_driveSubsystem.postTrenchRelocalizeCommand());
+        NamedCommands.registerCommand("resetBack", Autos.resetBack(m_driveSubsystem, "reset back"));
+        NamedCommands.registerCommand("resetBack2x", Autos.resetBack(m_driveSubsystem, "reset back 2x"));
+        NamedCommands.registerCommand("resetBack3x", Autos.resetBack(m_driveSubsystem, "reset back 3x"));
 
         // Lists every auto in deploy/pathplanner/autos, plus our non-PathPlanner routine
         m_autoChooser = AutoBuilder.buildAutoChooser();
@@ -87,6 +92,7 @@ public class RobotContainer {
    * joysticks}.
    */
     private void configureBindings() {
+        Trigger teleop = new Trigger(DriverStation::isTeleopEnabled);
 
         // Control the drive with split-stick arcade controls (left stick Y drives, right stick X turns)
         m_driveSubsystem.setDefaultCommand(
@@ -96,32 +102,35 @@ public class RobotContainer {
 
         // Left trigger SHOOTS: spin up, then feed with the loader once up to speed
         m_driverController.leftTrigger(OperatorConstants.kTriggerThreshold)
+            .and(teleop)
             .whileTrue(shootCommand(IOConstants.kFlywheelLaunchRPM));
 
         // Right trigger INTAKES: intake + loader, no flywheel
         m_driverController.rightTrigger(OperatorConstants.kTriggerThreshold)
+            .and(teleop)
             .whileTrue(Commands.parallel(m_intake.runIntakeCommand(), m_loader.runWithIntakeCommand()));
 
         // Left bumper EJECTS back out through the intake
         m_driverController.leftBumper()
+            .and(teleop)
             .whileTrue(Commands.parallel(m_intake.reverseIntakeCommand(), m_loader.runWithIntakeCommand(true)));
 
         // X toggles pre-spinning the flywheel so shots start faster
-        m_driverController.x().toggleOnTrue(m_flywheel.runShooterCommand(IOConstants.kFlywheelSpinUpRPM));
+        m_driverController.x().and(teleop).toggleOnTrue(m_flywheel.runShooterCommand(IOConstants.kFlywheelSpinUpRPM));
 
         // Y backs a stuck game piece out of the loader (loader only, run in reverse)
-        m_driverController.y().whileTrue(m_loader.runWithIntakeCommand(true));
+        m_driverController.y().and(teleop).whileTrue(m_loader.runWithIntakeCommand(true));
 
         // Range shots: A = high, B and right bumper = long range
-        m_driverController.a().whileTrue(shootCommand(IOConstants.kFlywheelHighShotRPM));
-        m_driverController.b().whileTrue(shootCommand(IOConstants.kFlywheelUltraShotRPM));
-        m_driverController.rightBumper().whileTrue(shootCommand(IOConstants.kFlywheelUltraShotRPM));
+        m_driverController.a().and(teleop).whileTrue(shootCommand(IOConstants.kFlywheelHighShotRPM));
+        m_driverController.b().and(teleop).whileTrue(shootCommand(IOConstants.kFlywheelUltraShotRPM));
+        m_driverController.rightBumper().and(teleop).whileTrue(shootCommand(IOConstants.kFlywheelUltraShotRPM));
 
         // Put the robot back at the starting pose (line it up on the field first)
-        m_driverController.start().onTrue(m_driveSubsystem.resetOdometryCommand());
+        m_driverController.start().and(teleop).onTrue(m_driveSubsystem.resetOdometryCommand());
 
-        // While enabled, hold Back to center the camera on tag 26 (tag 10 on red).
-        m_driverController.back().and(DriverStation::isEnabled)
+        // In teleop, hold Back to align to the configured offset using tag 26 (tag 10 on red).
+        m_driverController.back().and(teleop)
             .whileTrue(m_driveSubsystem.alignToHopperCenterCommand());
         // While disabled, Back still seeds the known pose after the robot is lined up by hand.
         m_driverController.back().and(DriverStation::isDisabled)
@@ -151,7 +160,10 @@ public class RobotContainer {
     public void updateAutoStartPreview() {
         Pose2d start = null;
         if (m_autoChooser.getSelected() instanceof PathPlannerAuto auto && auto.getStartingPose() != null) {
-            start = AutoBuilder.shouldFlip()
+            // Differential paths derive their preview heading from a sampled curve segment.
+            // These autos instead trust the known square placement, as hopperStart does.
+            start = Autos.startsAtHopperCenter(auto.getName()) ? DriveSubsystem.getHopperCenterPose()
+                : AutoBuilder.shouldFlip()
                 ? FlippingUtil.flipFieldPose(auto.getStartingPose())
                 : auto.getStartingPose();
         }

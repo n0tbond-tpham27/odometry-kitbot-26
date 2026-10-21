@@ -1,0 +1,91 @@
+{
+  "version": "2025.0",
+  "command": {
+    "type": "sequential",
+    "data": {
+      "commands": [
+        {
+          "type": "named",
+          "data": {
+            "name": "hopperStart"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "hopper front test R 3x"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "postTrenchRelocalize"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "resetBack3x"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "visionAlign"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "shoot"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "hopper front test R 3x"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "postTrenchRelocalize"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "resetBack3x"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "visionAlign"
+          }
+        }
+      ]
+    }
+  },
+  "resetOdom": false,
+  "folder": null,
+  "choreoAuto": false
+}

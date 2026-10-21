@@ -165,7 +165,17 @@ public final class Constants {
         public static final double kHopperCenterXMeters = 3.42587253414264;
         /** Center of AprilTag 26 in WPILib's installed 2026 welded field layout. */
         public static final double kHopperTagFaceXMeters = 4.0218614;
-        public static final double kHopperCenterYMeters = 4.0346376;
+        public static final double kHopperTagCenterYMeters = 4.0346376;
+        /** Known placement is centered on the hopper, square with its back against the face. */
+        public static final double kHopperDriverStationLeftOffsetMeters = 0.0;
+        public static final double kHopperCenterYMeters =
+            kHopperTagCenterYMeters + kHopperDriverStationLeftOffsetMeters;
+        /** Tag coordinates of the nominal path waypoint; independent of the camera aiming target. */
+        public static final double kHopperPathRightReferenceMeters = -kHopperDriverStationLeftOffsetMeters;
+        /** Final camera alignment centers the tag itself, overriding the coarse path bias. */
+        public static final double kHopperCameraRightTargetMeters = 0.0;
+        /** Return-only shift to Driver Station left; startup remains centered and square. */
+        public static final double kHopperReturnLeftOffsetMeters = 0.50;
         /** Robot-center distance out from the tag face; retains the existing bumper clearance. */
         public static final double kHopperTagStandOffMeters = kHopperTagFaceXMeters - kHopperCenterXMeters;
         /** Heading at "Hopper Center": front facing directly away from the hopper, toward the alliance wall. */
@@ -180,10 +190,11 @@ public final class Constants {
         public static final int kRedHopperTagId = 10;
         public static final int kHopperTagAcquireFrames = 3;
         public static final int kHopperTagConfirmFrames = 3;
+        public static final double kHopperImageCenterToleranceDegrees = 1.5;
         public static final double kHopperTagAcquireTimeoutSeconds = 1.2;
         public static final double kHopperTagMaxSpreadMeters = 0.08;
         public static final double kHopperTagMaxLateralMeters = 1.0;
-        public static final double kHopperTagMaxRangeMeters = 2.0;
+        public static final double kHopperTagMaxRangeMeters = 3.0;
         /**
          * How much to trust a vision position, as a standard deviation (meters): bigger means
          * trust it less and move the pose toward it more gently. 0.7 is Limelight's suggested
@@ -332,6 +343,10 @@ public final class Constants {
 
         /** Maximum X/Y distance from Hopper Center when alignment finishes (meters). */
         public static final double kHopperAlignToleranceMeters = 0.03;
+        /** Finish the sideways correction before accepting the final stand-off position. */
+        public static final double kHopperAlignLateralToleranceMeters = 0.012;
+        /** Tiny final aiming corrections after physical centering; never a large pivot at the hub. */
+        public static final double kHopperImageFineTurnMaxRadPerSec = 0.25;
         /** Final facing direction and initial turn must be within this angle (radians). */
         public static final double kHopperAlignHeadingToleranceRadians = Math.toRadians(2.0);
         /** Slow corrections near the hopper, using forward or reverse as needed. */
@@ -344,6 +359,18 @@ public final class Constants {
         public static final double kHopperAlignTurnSpeedToleranceRadPerSec = 0.1;
         /** Bound the whole correction, including turns and settling, if the robot cannot reach the spot. */
         public static final double kHopperAlignTimeoutSeconds = 10.0;
+        /** The 50 cm return offset may require extra forward clearance at the same slow speed. */
+        public static final double kHopperReturnAlignTimeoutSeconds = 18.0;
+        /** Make room to steer a reverse arc if lateral correction is needed close to the hopper. */
+        public static final double kHopperAlignClearanceMeters = 0.65;
+        public static final double kHopperAlignClearanceSpeedMetersPerSecond = 0.35;
+        public static final double kHopperAlignBearingP = 4.0;
+        public static final double kHopperAlignFinalBearingP = 4.0;
+        /** Keep the rear-facing camera aimed at the hub throughout the correction arc. */
+        public static final double kHopperApproachMaxHeadingRadians = Math.toRadians(30.0);
+        public static final double kHopperApproachMaxSpeedMetersPerSecond = 0.25;
+        public static final double kHopperApproachBrakingAccelMetersPerSecondSq = 0.6;
+        public static final double kHopperApproachStopMarginMeters = 0.02;
 
         /** Loop period (seconds) used by PathPlanner's LTV differential drive controller. */
         public static final double kLTVDtSeconds = RobotConstants.kRobotLoopPeriod;

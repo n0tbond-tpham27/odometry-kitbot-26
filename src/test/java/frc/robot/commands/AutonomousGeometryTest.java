@@ -16,17 +16,19 @@ class AutonomousGeometryTest {
     private final Path deploy = Path.of("src/main/deploy/pathplanner");
 
     @Test
-    void linkedHopperAndReturnWaypointsMatchShiftedAlignmentTarget() throws Exception {
-        JsonNode reset = path("reset back").get("waypoints");
-        JsonNode returnStart = reset.get(0).get("anchor");
-        JsonNode returnEnd = reset.get(reset.size() - 1).get("anchor");
-        assertHopperCenter(returnEnd);
-        for (String route : new String[] {"hopper front test L", "hopper front test R"}) {
-            JsonNode points = path(route).get("waypoints");
-            assertHopperCenter(points.get(0).get("anchor"));
-            JsonNode end = points.get(points.size() - 1).get("anchor");
-            assertEquals(returnStart.get("x").asDouble(), end.get("x").asDouble(), 1e-9);
-            assertEquals(returnStart.get("y").asDouble(), end.get("y").asDouble(), 1e-9);
+    void allLinkedHopperAndReturnWaypointsMatchTheCenteredPlacement() throws Exception {
+        for (String suffix : new String[] {"", " 2x", " 3x"}) {
+            JsonNode reset = path("reset back" + suffix).get("waypoints");
+            JsonNode returnStart = reset.get(0).get("anchor");
+            JsonNode returnEnd = reset.get(reset.size() - 1).get("anchor");
+            assertHopperCenter(returnEnd);
+            for (String route : new String[] {"hopper front test L", "hopper front test R"}) {
+                JsonNode points = path(route + suffix).get("waypoints");
+                assertHopperCenter(points.get(0).get("anchor"));
+                JsonNode end = points.get(points.size() - 1).get("anchor");
+                assertEquals(returnStart.get("x").asDouble(), end.get("x").asDouble(), 1e-9);
+                assertEquals(returnStart.get("y").asDouble(), end.get("y").asDouble(), 1e-9);
+            }
         }
         JsonNode layout = json.readTree(getClass().getResourceAsStream(
             "/edu/wpi/first/apriltag/2026-rebuilt-welded.json"));
@@ -34,7 +36,8 @@ class AutonomousGeometryTest {
             if (tag.get("ID").asInt() == kBlueHopperTagId) {
                 assertEquals(26, kBlueHopperTagId);
                 assertEquals(10, kRedHopperTagId);
-                assertEquals(tag.get("pose").get("translation").get("y").asDouble(), kHopperCenterYMeters, 1e-9);
+                assertEquals(tag.get("pose").get("translation").get("y").asDouble(), kHopperTagCenterYMeters, 1e-9);
+                assertEquals(0.0, kHopperCenterYMeters - kHopperTagCenterYMeters, 1e-9);
                 assertEquals(tag.get("pose").get("translation").get("x").asDouble(), kHopperTagFaceXMeters, 1e-9);
                 return;
             }
@@ -44,14 +47,17 @@ class AutonomousGeometryTest {
 
     @Test
     void everyTrenchRouteReacquiresBeforeReturningAndAlignsAfterward() throws Exception {
-        for (String name : new String[] {"Center Left", "Center Right"}) {
-            JsonNode commands = json.readTree(deploy.resolve("autos/" + name + ".auto").toFile())
-                .get("command").get("data").get("commands");
+        for (String name : new String[] {"Center Left", "Center Right", "Center Left 2x", "Center Right 2x",
+                "Center Left 3x", "Center Right 3x"}) {
+            JsonNode auto = json.readTree(deploy.resolve("autos/" + name + ".auto").toFile());
+            assertFalse(auto.get("resetOdom").asBoolean(), "Explicit hopperStart owns the exact starting pose");
+            JsonNode commands = auto.get("command").get("data").get("commands");
+            assertNamed(commands.get(0), "hopperStart");
             int returns = 0;
             for (int i = 0; i < commands.size(); i++) {
                 JsonNode command = commands.get(i);
-                if ("path".equals(command.get("type").asText())
-                        && "reset back".equals(command.get("data").path("pathName").asText())) {
+                if ("named".equals(command.get("type").asText())
+                        && command.get("data").path("name").asText().startsWith("resetBack")) {
                     returns++;
                     assertTrue(i >= 2 && i + 1 < commands.size());
                     assertNamed(commands.get(i - 1), "postTrenchRelocalize");
