@@ -111,6 +111,8 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     private boolean m_visionResetSucceeded = false;
     /** Non-null only during the deliberate stationary localization stop after a trench route. */
     private VisionPoseReacquisition m_activeVisionReacquisition = null;
+    /** Collect while driving so a visible trench tag corrects the path before it leaves view. */
+    private final VisionPoseReacquisition m_trenchPathLocalization = VisionPoseReacquisition.forTrenchTags();
     private boolean m_hopperTagAlignmentActive = false;
     private boolean m_hopperTagAligned = false;
     private boolean m_hopperPoseAcquired = false;
@@ -679,9 +681,15 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
      * depends on kVisionXYStdDevMeters), so a single bad frame can't throw it far off.
      */
     private void updateVision() {
+        double now = Timer.getFPGATimestamp();
         double yawRateDegreesPerSecond = m_pigeon2.getAngularVelocityZWorld().getValueAsDouble();
         // MegaTag2 needs our field heading every loop, even while vision is switched off here
         m_limelight.setRobotOrientation(getPose().getRotation().getDegrees(), yawRateDegreesPerSecond);
+
+        if (!DriverStation.isAutonomousEnabled() || !SmartDashboard.getBoolean("Vision/Enabled", true)
+                || m_hopperTagAlignmentActive || m_activeVisionReacquisition != null) {
+            m_trenchPathLocalization.reset(now);
+        }
 
         if (m_hopperTagAlignmentActive) {
             // The alignment command owns tag-relative localization until it finishes.
@@ -704,14 +712,39 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
         SmartDashboard.putNumber("Vision/Disagreement (m)", disagreementMeters);
 
         if (m_activeVisionReacquisition != null) {
-            double now = Timer.getFPGATimestamp();
             if (!SmartDashboard.getBoolean("Vision/Enabled", true) || !isStoppedForVision()) {
                 m_activeVisionReacquisition.reset(now);
             } else {
-                m_activeVisionReacquisition.add(m, getPose(), now);
+                collectTrenchCapture(m_activeVisionReacquisition, m, yawRateDegreesPerSecond, now);
             }
             SmartDashboard.putNumber("Vision/Post Trench Frames", m_activeVisionReacquisition.getFrameCount());
             // Keep the odometry baseline stable while the independently validated cluster forms.
+            return;
+        }
+
+        if (DriverStation.isAutonomousEnabled() && SmartDashboard.getBoolean("Vision/Enabled", true)
+                && VisionPoseReacquisition.hasTrenchTag(m)) {
+            collectTrenchCapture(m_trenchPathLocalization, m, yawRateDegreesPerSecond, now);
+            SmartDashboard.putNumber("Vision/Trench Frames", m_trenchPathLocalization.getFrameCount());
+            SmartDashboard.putString("Vision/Trench Tag IDs", java.util.Arrays.toString(m.tagIds()));
+            Optional<PoseMeasurement> confirmed = m_trenchPathLocalization.getMeasurement(now);
+            if (confirmed.isPresent()) {
+                PoseMeasurement correction = confirmed.get();
+                // Preserve the gyro heading and compensate camera latency inside the estimator.
+                // PathPlanner's existing getPose supplier sees the corrected field X/Y immediately.
+                m_poseEstimator.addVisionMeasurement(correction.pose(), correction.timestampSeconds(),
+                    VecBuilder.fill(kTrenchVisionXYStdDevMeters, kTrenchVisionXYStdDevMeters, 9999999));
+                m_lastAcceptedVisionPose = correction.pose();
+                m_lastAcceptedVisionTime = now;
+                SmartDashboard.putNumber("Vision/Trench Last Correction Time (s)", now);
+                SmartDashboard.putString("Vision/Trench Status", "field position corrected from trench tag");
+                SmartDashboard.putString("Vision/Status", "used trench-tag correction");
+                m_trenchPathLocalization.reset(now);
+            } else {
+                SmartDashboard.putString("Vision/Trench Status", "waiting for five fresh consistent trench captures");
+                SmartDashboard.putString("Vision/Status", "collecting trench-tag correction");
+            }
+            // Do not mix weak per-frame fusion into the baseline used by this consensus.
             return;
         }
 
@@ -741,10 +774,24 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
         }
 
         // MegaTag2's heading is just the one we sent it, so don't let it correct the heading
+        m_trenchPathLocalization.reset(now);
         m_poseEstimator.addVisionMeasurement(m.pose(), m.timestampSeconds(),
             VecBuilder.fill(kVisionXYStdDevMeters, kVisionXYStdDevMeters, 9999999));
         m_lastAcceptedVisionPose = m.pose();
         m_lastAcceptedVisionTime = Timer.getFPGATimestamp();
+    }
+
+    private void collectTrenchCapture(VisionPoseReacquisition acquisition, PoseMeasurement measurement,
+            double yawRateDegreesPerSecond, double now) {
+        if (!SmartDashboard.getBoolean("Vision/Enabled", true) || !Double.isFinite(yawRateDegreesPerSecond)
+                || Math.abs(yawRateDegreesPerSecond) > kTrenchVisionMaxYawRateDegreesPerSecond) {
+            acquisition.reset(now);
+            return;
+        }
+        if (Double.isFinite(measurement.timestampSeconds())) {
+            m_poseEstimator.sampleAt(measurement.timestampSeconds())
+                .ifPresent(historical -> acquisition.add(measurement, historical, now));
+        }
     }
 
     private boolean isStoppedForVision() {
@@ -755,12 +802,11 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     /**
      * Re-establishes field X/Y after the trench route, before following reset back. Only uses
-     * fresh captures taken after stopping; multi-tag consensus can recover larger encoder drift.
+     * fresh trench-tag captures taken after stopping; a consistent single trench tag is enough.
      * MegaTag2 does not independently measure heading, so heading continues to use the gyro.
      */
     public Command postTrenchRelocalizeCommand() {
-        VisionPoseReacquisition acquisition = new VisionPoseReacquisition(
-            kPostTrenchVisionFrames, kPostTrenchVisionMaxSpreadMeters, kPostTrenchVisionMaxCorrectionMeters);
+        VisionPoseReacquisition acquisition = VisionPoseReacquisition.forTrenchTags();
         Timer timer = new Timer();
         return new FunctionalCommand(
             () -> {
@@ -769,7 +815,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
                 acquisition.reset(Timer.getFPGATimestamp());
                 m_activeVisionReacquisition = acquisition;
                 timer.restart();
-                SmartDashboard.putString("Vision/Post Trench Status", "waiting for stationary tag consensus");
+                SmartDashboard.putString("Vision/Post Trench Status", "waiting for stationary trench-tag consensus");
                 SmartDashboard.putNumber("Vision/Post Trench Frames", 0);
             },
             () -> {
@@ -785,6 +831,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
                 Optional<Translation2d> position = acquisition.getPosition(Timer.getFPGATimestamp());
                 boolean success = !interrupted && SmartDashboard.getBoolean("Vision/Enabled", true)
                     && isStoppedForVision() && position.isPresent();
+                m_visionResetSucceeded = success;
                 if (success) {
                     Pose2d corrected = new Pose2d(position.get(), getPose().getRotation());
                     resetOdometry(corrected);
@@ -793,8 +840,8 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
                 }
                 SmartDashboard.putNumber("Vision/Post Trench Frames", acquisition.getFrameCount());
                 SmartDashboard.putBoolean("Vision/Post Trench Succeeded", success);
-                SmartDashboard.putString("Vision/Post Trench Status", success ? "field position recovered"
-                    : interrupted ? "interrupted" : "no consensus; kept odometry");
+                SmartDashboard.putString("Vision/Post Trench Status", success ? "field position recovered from trench tag"
+                    : interrupted ? "interrupted" : "no fresh trench consensus; kept odometry");
             },
             () -> acquisition.getPosition(Timer.getFPGATimestamp()).isPresent()
                 || timer.hasElapsed(kPostTrenchVisionTimeoutSeconds),
@@ -870,6 +917,11 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     /** Called at every autonomous enable, including autos that do not capture a hopper view. */
     public void clearHopperStartView() {
+        m_trenchPathLocalization.reset(Timer.getFPGATimestamp());
+        SmartDashboard.putString("Vision/Trench Status", "waiting for trench tag on autonomous path");
+        SmartDashboard.putNumber("Vision/Trench Frames", 0);
+        SmartDashboard.putString("Vision/Trench Tag IDs", "[]");
+        SmartDashboard.putNumber("Vision/Trench Last Correction Time (s)", Double.NaN);
         m_hopperStartView.reset(AutoBuilder.shouldFlip() ? kRedHopperTagId : kBlueHopperTagId,
             getHopperCenterPose(), Timer.getFPGATimestamp());
         SmartDashboard.putBoolean("Vision/Start View Saved", false);

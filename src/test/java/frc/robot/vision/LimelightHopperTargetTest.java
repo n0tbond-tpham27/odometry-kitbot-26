@@ -24,6 +24,26 @@ class LimelightHopperTargetTest {
     }
 
     @Test
+    void readsTrenchTagIdentityAndAmbiguityFromTheSamePoseCapture() {
+        try (var instance = NetworkTableInstance.create()) {
+            var limelight = new Limelight(instance, "test");
+            try (var publisher = instance.getTable("test").getDoubleArrayTopic("botpose_orb_wpiblue").publish()) {
+                publisher.set(new double[] {5, 7, 0, 0, 0, 180, 40, 1, 0, 2, 0.2,
+                    28, -6, 0, 0.2, 2, 2, 0.05}, 10_000_000);
+                var frame = limelight.getNewPose().orElseThrow();
+                assertArrayEquals(new int[] {28}, frame.tagIds());
+                assertArrayEquals(new double[] {0.05}, frame.tagAmbiguities());
+                assertEquals(9.96, frame.timestampSeconds(), 1e-9);
+                assertTrue(VisionPoseReacquisition.hasTrenchTag(frame));
+                publisher.set(new double[] {5, 7, 0, 0, 0, 180, 40, 1, 0, 2, 0.2,
+                    28, -6}, 10_100_000);
+                assertTrue(Double.isNaN(limelight.getNewPose().orElseThrow().tagAmbiguities()[0]),
+                    "Missing quality data must never be treated as zero ambiguity");
+            }
+        }
+    }
+
+    @Test
     void usesBothHopperTagsAndIndependentHeadingEvenWhenSuppliedGyroHeadingIsWrong() {
         try (var instance = NetworkTableInstance.create()) {
             var limelight = new Limelight(instance, "test");

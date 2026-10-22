@@ -27,7 +27,11 @@ public class Limelight {
     /** A robot position measured from AprilTags, ready for addVisionMeasurement(). */
     public record PoseMeasurement(
         Pose2d pose, double timestampSeconds, int tagCount, double avgTagDistanceMeters, int[] tagIds,
-        double[] tagHorizontalDegrees) {
+        double[] tagHorizontalDegrees, double[] tagAmbiguities) {
+        public PoseMeasurement(Pose2d pose, double timestampSeconds, int tagCount,
+                double avgTagDistanceMeters, int[] tagIds, double[] tagHorizontalDegrees) {
+            this(pose, timestampSeconds, tagCount, avgTagDistanceMeters, tagIds, tagHorizontalDegrees, new double[0]);
+        }
         public PoseMeasurement(Pose2d pose, double timestampSeconds, int tagCount,
                 double avgTagDistanceMeters, int[] tagIds) {
             this(pose, timestampSeconds, tagCount, avgTagDistanceMeters, tagIds, new double[0]);
@@ -356,14 +360,19 @@ public class Limelight {
         Pose2d pose = new Pose2d(data[0], data[1], Rotation2d.fromDegrees(data[5]));
         int[] tagIds = new int[tagCount];
         double[] tagHorizontalDegrees = new double[tagCount];
+        double[] tagAmbiguities = new double[tagCount];
         java.util.Arrays.fill(tagHorizontalDegrees, Double.NaN);
+        java.util.Arrays.fill(tagAmbiguities, Double.NaN);
         for (int i = 0; i < tagCount && kMinLength + i * kValuesPerTag < data.length; i++) {
             tagIds[i] = (int) data[kMinLength + i * kValuesPerTag];
             if (kMinLength + i * kValuesPerTag + 1 < data.length) {
                 tagHorizontalDegrees[i] = data[kMinLength + i * kValuesPerTag + 1];
             }
+            if (kMinLength + i * kValuesPerTag + 6 < data.length) {
+                tagAmbiguities[i] = data[kMinLength + i * kValuesPerTag + 6];
+            }
         }
         return Optional.of(new PoseMeasurement(
-            pose, timestampSeconds, tagCount, data[kAvgDistanceIndex], tagIds, tagHorizontalDegrees));
+            pose, timestampSeconds, tagCount, data[kAvgDistanceIndex], tagIds, tagHorizontalDegrees, tagAmbiguities));
     }
 }

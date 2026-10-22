@@ -229,12 +229,19 @@ public final class Constants {
         public static final double kMaxVisionAgeSeconds = 0.3;
         /** Allow a small timestamp skew between NetworkTables and the FPGA clock. */
         public static final double kVisionFutureToleranceSeconds = 0.05;
+        /** Trench markers on both sides of the blue and red trenches in the 2026 field map. */
+        public static final java.util.Set<Integer> kTrenchAprilTagIds = java.util.Set.of(1, 6, 7, 12, 17, 22, 23, 28);
+        public static final double kTrenchVisionMaxDistanceMeters = 3.0;
+        public static final double kTrenchVisionMaxAmbiguity = 0.2;
+        public static final double kTrenchVisionMaxYawRateDegreesPerSecond = 120.0;
+        /** Apply a confirmed trench position promptly so PathPlanner can correct its track. */
+        public static final double kTrenchVisionXYStdDevMeters = 0.01;
         /** Deliberate localization stop after the trench route, before the reset-back path. */
         public static final double kPostTrenchVisionTimeoutSeconds = 1.0;
         public static final int kPostTrenchVisionFrames = 5;
-        /** Every pair of stationary camera positions must agree within this distance. */
+        /** Every pair of vision-minus-odometry offsets must agree within this distance. */
         public static final double kPostTrenchVisionMaxSpreadMeters = 0.12;
-        /** Larger than normal fusion's limit; corrections over 1 m additionally need multiple tags. */
+        /** Validated trench-tag consensus can recover this much drift, including from one tag. */
         public static final double kPostTrenchVisionMaxCorrectionMeters = 2.0;
         /** Field size (meters), from WPILib's 2026 AprilTag layout; vision positions outside it are rejected. */
         public static final double kFieldLengthMeters = 16.541;
