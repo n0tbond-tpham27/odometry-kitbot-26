@@ -57,7 +57,7 @@ class HopperStartViewTest {
     }
 
     @Test
-    void aSingleTagOrGyroBasedPoseCannotBeSavedAsThePairedStartupView() {
+    void anUnpairedPoseCannotBeSavedAsThePairedStartupView() {
         var view = new HopperStartView();
         view.reset(26, START, 10);
         for (int i = 0; i < 5; i++) {

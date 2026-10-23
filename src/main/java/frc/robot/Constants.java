@@ -196,7 +196,7 @@ public final class Constants {
         /** Factory LL4 lens; the uploaded reference image uses the full 1280x800 view. */
         public static final double kHubPhotoHorizontalFovDegrees = 82.0;
         public static final double kHubPhotoVerticalFovDegrees = 56.2;
-        public static final double kHubPhotoCaptureToleranceDegrees = 5.0;
+        public static final double kHubPhotoCaptureToleranceDegrees = 3.0;
         public static final double kHopperViewFinePositionToleranceMeters = 0.01;
         public static final double kHopperViewFineStopMarginMeters = 0.005;
         public static final double kHopperTagAcquireTimeoutSeconds = 1.2;
@@ -360,7 +360,7 @@ public final class Constants {
         public static final double kHopperAlignToleranceMeters = 0.03;
         /** Finish the sideways correction before accepting the final stand-off position. */
         public static final double kHopperAlignLateralToleranceMeters = 0.012;
-        /** Small autonomous-only trim toward Driver Station left to counter the observed right bias. */
+        /** Keep zero when matching the hub reference view; no separate lateral offset. */
         public static final double kHopperReturnLeftTrimMeters = 0.0;
         /** Final facing direction and initial turn must be within this angle (radians). */
         public static final double kHopperAlignHeadingToleranceRadians = Math.toRadians(0.5);

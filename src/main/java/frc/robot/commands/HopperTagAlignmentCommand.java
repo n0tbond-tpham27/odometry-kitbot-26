@@ -1,14 +1,12 @@
 package frc.robot.commands;
 
 import static frc.robot.Constants.AutoConstants.*;
-import static frc.robot.Constants.OdometryConstants.*;
 import static frc.robot.Constants.VisionConstants.*;
 
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 
-import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
@@ -182,8 +180,8 @@ public final class HopperTagAlignmentCommand extends Command {
             // A return trim moves the physical goal, never the measured coordinate frame.
             Pose2d rawPose = measurement.toFieldPose(m_referencePose);
             Rotation2d gyroHeading = m_io.getHeadingAt(measurement.timestampSeconds());
-            // Compare independent two-tag poses in the startup frame. This measures yaw
-            // separately from sideways displacement and cancels a fixed startup pose offset.
+            // Compare field X/Y with the startup reference, but retain the gyro heading.
+            // The camera may correct translation without changing the gyro's field reference.
             Pose2d directPose = m_startView == null ? new Pose2d(rawPose.getTranslation(), gyroHeading) : new Pose2d(
                 m_startView.startingPose().getTranslation().plus(rawPose.getTranslation()
                     .minus(m_startView.pairedFieldPose().getTranslation())),
@@ -200,8 +198,7 @@ public final class HopperTagAlignmentCommand extends Command {
                 }
             }
             if (m_controller != null && previouslyUsingView != m_usingViewPose) {
-                m_controller = new HopperAlignmentController(m_goal,
-                    m_usingViewPose ? kHopperViewFinePositionToleranceMeters : kHopperAlignToleranceMeters, m_maxSpeed);
+                m_controller = newController();
                 m_controller.reset(directPose);
             }
             Pose2d error = directPose.relativeTo(m_goal);
@@ -231,15 +228,13 @@ public final class HopperTagAlignmentCommand extends Command {
                     Pose2d corrected = new Pose2d(m_sum.div(m_frames), m_io.getPose().getRotation());
                     m_io.resetOdometry(corrected);
                     m_io.onHopperPoseAcquired();
-                    m_controller = new HopperAlignmentController(m_goal,
-                        m_usingViewPose ? kHopperViewFinePositionToleranceMeters : kHopperAlignToleranceMeters, m_maxSpeed);
+                    m_controller = newController();
                     m_controller.reset(corrected);
                 }
             } else {
                 m_io.fuseHopperTagPose(directPose, measurement.timestampSeconds());
-                // Both tag observations are required in this pose. Confirm the body pose:
-                // aiming either tag to a pixel cannot substitute for translation, and the
-                // deliberate bumper stop margin slightly changes the two image angles.
+                // Require the chassis pose, gyro heading, and both tag views to agree.
+                // A turn that merely puts one tag at the crosshair is insufficient.
                 boolean centered = error.getTranslation().getNorm() <= kHopperAlignToleranceMeters
                     && Math.abs(error.getY()) <= kHopperAlignLateralToleranceMeters
                     && Math.abs(error.getRotation().getRadians()) <= kHopperAlignHeadingToleranceRadians
@@ -297,6 +292,13 @@ public final class HopperTagAlignmentCommand extends Command {
             && Double.isFinite(measurement.rightMeters()) && Math.abs(measurement.rightMeters()) <= kHopperTagMaxLateralMeters
             && Double.isFinite(measurement.outwardMeters()) && measurement.outwardMeters() > 0.1
             && measurement.outwardMeters() <= kHopperTagMaxRangeMeters;
+    }
+
+    private HopperAlignmentController newController() {
+        return new HopperAlignmentController(m_goal,
+            m_usingViewPose ? kHopperViewFinePositionToleranceMeters : kHopperAlignToleranceMeters, m_maxSpeed,
+            m_usingViewPose ? kHopperViewFineStopMarginMeters : kHopperApproachStopMarginMeters,
+            m_usingViewPose ? 4.0 : 2.5);
     }
 
     /** Move the return goal toward the driver's left, mirrored with the alliance heading. */

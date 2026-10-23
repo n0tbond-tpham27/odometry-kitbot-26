@@ -38,8 +38,17 @@ class HopperTagAlignmentCommandTest {
             HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
                 () -> io.now, () -> io.enabled, kHopperApproachMaxSpeedMetersPerSecond, null, 0.0, true);
             command.initialize();
-            run(command, io);
-            assertTrue(io.success, io.status + "; actual=" + io.actual + "; tx=" + io.imageAngleDegrees());
+            StringBuilder trace = new StringBuilder();
+            for (int step = 0; step < 930 && !command.isFinished(); step++) {
+                command.execute();
+                if (step % 50 == 0) {
+                    trace.append("\n").append(io.now).append(" actual=").append(io.actual)
+                        .append(" odom=").append(io.odometry).append(" vx=").append(io.commanded.vxMetersPerSecond)
+                        .append(" w=").append(io.commanded.omegaRadiansPerSecond).append(" ").append(io.status);
+                }
+                io.step();
+            }
+            assertTrue(io.success, io.status + "; actual=" + io.actual + "; tx=" + io.imageAngleDegrees() + trace);
             assertTrue(HopperViewAlignment.photo().matches(io.getNewHopperTagPose(26)
                 .orElseGet(() -> { io.now += 0.04; return io.getNewHopperTagPose(26).orElseThrow(); }), 1.5));
             assertEquals(GOAL.getY(), io.actual.getY(), kHopperAlignLateralToleranceMeters);

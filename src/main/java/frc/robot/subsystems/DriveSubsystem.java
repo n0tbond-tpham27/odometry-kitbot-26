@@ -941,7 +941,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
                 .filter(saved -> saved.tagId() == tagId).orElse(null) : null;
             if (useStartView) {
                 SmartDashboard.putString("Auto/Return Reference", reference != null
-                    ? "saved startup tag view" : "known centered pose: startup view unavailable");
+                    ? "gyro + live captured hub view" : "gyro + hub photo estimate: no matching live capture");
             }
             return new HopperTagAlignmentCommand(this, this, getHopperCenterPose(), tagId,
                 Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed, reference,

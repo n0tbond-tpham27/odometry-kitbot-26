@@ -129,7 +129,7 @@ public class Limelight {
         m_imuModePub.set(0); // LL4 MT2 uses the external robot gyro, not camera-derived yaw.
     }
 
-    /** Prefer the independent two-tag pose; other sources are marked as unpaired. */
+    /** Prefer a gyro-assisted two-tag MT2 pose; other sources are marked as unpaired. */
     public Optional<TargetMeasurement> getNewHopperTarget(int tagId, Pose2d goal, double gyroHeadingDegrees, double now) {
         double[] mount = m_cameraRobotPoseSub.get();
         if (mount.length >= 6 && Double.isFinite(mount[0]) && Double.isFinite(mount[1])) {

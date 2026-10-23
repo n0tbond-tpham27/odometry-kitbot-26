@@ -71,10 +71,6 @@ public final class HopperStartView {
             return;
         }
         double age = now - sample.timestampSeconds();
-        if (m_requirePhotoMatch && !HopperViewAlignment.photo().matches(sample, kHubPhotoCaptureToleranceDegrees)) {
-            clearCluster();
-            return;
-        }
         if (!sample.hasHopperPair() || !Double.isFinite(sample.fieldHeadingDegrees())
                 || !Double.isFinite(sample.rightMeters())
                 || !Double.isFinite(sample.companionImageHorizontalDegrees())
@@ -84,6 +80,10 @@ public final class HopperStartView {
                 || age > kMaxVisionAgeSeconds || age < -kVisionFutureToleranceSeconds
                 || !Double.isFinite(sample.imageHorizontalDegrees()) || Math.abs(sample.imageHorizontalDegrees()) >= 70.0
                 || !validRange(sample.outwardMeters()) || !validRange(sample.cameraOutwardMeters())) {
+            return;
+        }
+        if (m_requirePhotoMatch && !HopperViewAlignment.photo().matches(sample, kHubPhotoCaptureToleranceDegrees)) {
+            clearCluster();
             return;
         }
         if (m_first == null || sample.timestampSeconds() - m_lastCapture > kMaxVisionAgeSeconds

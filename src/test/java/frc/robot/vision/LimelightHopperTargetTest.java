@@ -65,6 +65,8 @@ class LimelightHopperTargetTest {
                 assertEquals(GOAL.getX() - 0.6, target.toFieldPose(GOAL).getX(), 1e-9);
                 assertTrue(limelight.getHopperSource().contains("25 + 26"));
                 assertEquals("gyro + MegaTag2 pair: 25 + 26", limelight.getHopperSource());
+                assertEquals(0, table.getEntry("imumode_set").getDouble(-1), 1e-9,
+                    "LL4 must use the external robot gyro for this controller");
                 // A second poll must not reuse the MT2 capture. MT1 can only be an unpaired fallback.
                 assertTrue(limelight.getNewHopperTarget(26, GOAL, 180, 10.02).isEmpty());
             }

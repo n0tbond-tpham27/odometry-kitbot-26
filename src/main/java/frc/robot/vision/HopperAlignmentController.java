@@ -13,6 +13,9 @@ public final class HopperAlignmentController {
     private Pose2d m_target;
     private final double m_positionToleranceMeters;
     private final double m_maxSpeed;
+    private final double m_stopMarginMeters;
+    private final double m_clearancePerLateralMeter;
+    private double m_clearanceTargetMeters;
     private Phase m_phase = Phase.APPROACH;
 
     public HopperAlignmentController(Pose2d target) {
@@ -24,13 +27,34 @@ public final class HopperAlignmentController {
     }
 
     public HopperAlignmentController(Pose2d target, double positionToleranceMeters, double maxSpeed) {
+        this(target, positionToleranceMeters, maxSpeed, kHopperApproachStopMarginMeters);
+    }
+
+    public HopperAlignmentController(Pose2d target, double positionToleranceMeters, double maxSpeed,
+            double stopMarginMeters) {
+        this(target, positionToleranceMeters, maxSpeed, stopMarginMeters, 2.5);
+    }
+
+    public HopperAlignmentController(Pose2d target, double positionToleranceMeters, double maxSpeed,
+            double stopMarginMeters, double clearancePerLateralMeter) {
         m_target = target;
         m_positionToleranceMeters = positionToleranceMeters;
         m_maxSpeed = maxSpeed;
+        m_stopMarginMeters = stopMarginMeters;
+        m_clearancePerLateralMeter = clearancePerLateralMeter;
     }
 
     public void reset(Pose2d current) {
-        m_phase = needsClearance(current.relativeTo(m_target)) ? Phase.CLEARANCE : Phase.APPROACH;
+        Pose2d relative = current.relativeTo(m_target);
+        m_phase = Phase.APPROACH;
+        if (needsClearance(relative)) { startClearance(relative); }
+    }
+
+    private void startClearance(Pose2d relative) {
+        m_phase = Phase.CLEARANCE;
+        // Plan enough clearance for this maneuver before steering back toward the hub.
+        m_clearanceTargetMeters = Math.max(kHopperAlignClearanceMeters,
+            m_clearancePerLateralMeter * Math.abs(relative.getY()));
     }
 
     /** Refine the lateral goal from the observed image without restarting a clearance maneuver. */
@@ -64,9 +88,9 @@ public final class HopperAlignmentController {
             return new ChassisSpeeds();
         }
         if (m_phase == Phase.APPROACH && Math.abs(relative.getY()) > kHopperAlignLateralToleranceMeters
-                && (relative.getX() <= m_positionToleranceMeters + kHopperApproachStopMarginMeters
+                && (relative.getX() <= m_positionToleranceMeters + m_stopMarginMeters
                     || Math.abs(Math.atan2(relative.getY(), relative.getX())) > kHopperApproachMaxHeadingRadians)) {
-            m_phase = Phase.CLEARANCE;
+            startClearance(relative);
         }
         if (distance <= m_positionToleranceMeters && Math.abs(relative.getY()) <= kHopperAlignLateralToleranceMeters) {
             m_phase = Phase.FINAL_HEADING;
@@ -86,7 +110,10 @@ public final class HopperAlignmentController {
         }
 
         if (m_phase == Phase.CLEARANCE) {
-            double clearance = Math.max(kHopperAlignClearanceMeters, 2.5 * Math.abs(relative.getY()));
+            // Preserve the planned room, but enlarge it if the initial straight pull
+            // reveals substantially more lateral error than was measured at reset.
+            m_clearanceTargetMeters = Math.max(m_clearanceTargetMeters, 2.5 * Math.abs(relative.getY()));
+            double clearance = m_clearanceTargetMeters;
             if (relative.getX() >= clearance - m_positionToleranceMeters) {
                 m_phase = Phase.APPROACH;
             } else {

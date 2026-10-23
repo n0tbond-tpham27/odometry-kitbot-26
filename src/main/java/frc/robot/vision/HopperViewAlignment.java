@@ -72,7 +72,7 @@ public final class HopperViewAlignment {
         double span = main - companion;
         double targetSpan = targetMain - targetCompanion;
         double ratio = span / targetSpan;
-        if (!Double.isFinite(ratio) || span <= 0.02 || targetSpan <= 0.02 || ratio < 0.5 || ratio > 2.0) {
+        if (!Double.isFinite(ratio) || span <= 0.02 || targetSpan <= 0.02 || ratio < 0.15 || ratio > 2.0) {
             return Optional.empty();
         }
         double desiredDistance = distance * ratio;

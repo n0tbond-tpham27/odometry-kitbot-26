@@ -35,7 +35,7 @@ class HopperAutoStartTest {
     private static boolean shooting;
     private static int visionAttempts;
     private static int pathOutputs;
-    private static final HopperStartView START_VIEW = new HopperStartView();
+    private static final HopperStartView START_VIEW = new HopperStartView(true);
 
     @BeforeAll
     static void configureRealPathPlannerWithStationaryDrive() throws Exception {
