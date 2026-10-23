@@ -76,10 +76,12 @@ public final class CaptureHopperStartViewCommand extends Command {
         boolean saved = m_view.getReference().isPresent();
         SmartDashboard.putBoolean("Vision/Start View Saved", saved);
         SmartDashboard.putString("Vision/Start View Status", saved ? "saved for this autonomous run"
-            : interrupted ? "capture cancelled" : "unavailable; returns use known centered pose");
+            : interrupted ? "capture cancelled" : "no matching live view; return uses hub photo estimate and gyro");
         m_view.getReference().ifPresent(reference -> {
             SmartDashboard.putNumber("Vision/Start View TX (deg)", reference.imageHorizontalDegrees());
             SmartDashboard.putNumber("Vision/Start View Companion TX (deg)", reference.companionImageHorizontalDegrees());
+            SmartDashboard.putNumber("Vision/Start View TY (deg)", reference.imageVerticalDegrees());
+            SmartDashboard.putNumber("Vision/Start View Companion TY (deg)", reference.companionImageVerticalDegrees());
             SmartDashboard.putNumber("Vision/Start View Camera Range (m)", reference.cameraOutwardMeters());
             SmartDashboard.putNumber("Vision/Start View Robot Range (m)", reference.robotOutwardMeters());
         });

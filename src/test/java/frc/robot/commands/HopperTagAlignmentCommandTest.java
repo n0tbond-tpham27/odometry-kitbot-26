@@ -16,6 +16,7 @@ import edu.wpi.first.math.geometry.Twist2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.wpilibj2.command.Subsystem;
 import frc.robot.vision.Limelight.TargetMeasurement;
+import frc.robot.vision.HopperViewAlignment;
 
 class HopperTagAlignmentCommandTest {
     private static final Pose2d GOAL = new Pose2d(kHopperCenterXMeters, kHopperCenterYMeters,
@@ -24,6 +25,74 @@ class HopperTagAlignmentCommandTest {
         Rotation2d.fromDegrees(kHopperCenterHeadingDegrees));
     private static final Pose2d TAG_REFERENCE = new Pose2d(kHopperCenterXMeters, kHopperTagCenterYMeters,
         Rotation2d.fromDegrees(kHopperCenterHeadingDegrees));
+
+    @Test
+    void restoresBothTagsToThePhotoWhileTheGyroHoldsHeadingDespiteCameraYawAndPositionBias() {
+        for (double side : new double[] {-0.25, 0.25}) {
+            FakeDrive io = new FakeDrive(new Pose2d(1.95, GOAL.getY() + side,
+                GOAL.getRotation().plus(Rotation2d.fromDegrees(10))));
+            configurePhotoCamera(io);
+            io.visionLateralBiasMeters = 0.18;
+            io.independentHeadingBiasDegrees = 30;
+            io.rightwardDriftPerMeter = 0.10;
+            HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+                () -> io.now, () -> io.enabled, kHopperApproachMaxSpeedMetersPerSecond, null, 0.0, true);
+            command.initialize();
+            run(command, io);
+            assertTrue(io.success, io.status + "; actual=" + io.actual + "; tx=" + io.imageAngleDegrees());
+            assertTrue(HopperViewAlignment.photo().matches(io.getNewHopperTagPose(26)
+                .orElseGet(() -> { io.now += 0.04; return io.getNewHopperTagPose(26).orElseThrow(); }), 1.5));
+            assertEquals(GOAL.getY(), io.actual.getY(), kHopperAlignLateralToleranceMeters);
+            assertEquals(0, io.actual.getRotation().minus(GOAL.getRotation()).getRadians(), kHopperAlignHeadingToleranceRadians);
+            assertTrue(io.minimumOutward >= kHopperTagStandOffMeters - 0.01, "Do not back through the photographed stand-off");
+            command.end(false);
+        }
+    }
+
+    private static void configurePhotoCamera(FakeDrive io) {
+        var photo = HopperViewAlignment.photo();
+        double distance = 0.3556 / (Math.tan(Math.toRadians(photo.mainX())) - Math.tan(Math.toRadians(photo.companionX())));
+        double right = -distance * Math.tan(Math.toRadians(photo.mainX()));
+        io.cameraOffsetRobot = new Translation2d(distance - kHopperTagStandOffMeters, right);
+        io.fullView = true;
+    }
+
+    @Test
+    void returnTrimPhysicallyMovesLeftFromEitherSideWithoutAccumulatingAcrossCycles() {
+        FakeDrive io = new FakeDrive(GOAL);
+        io.cameraOffsetRobot = new Translation2d(-0.20, 0.08);
+        io.visionLateralBiasMeters = 0.18;
+        var reference = captureStartView(io, GOAL, 26);
+        for (double offset : new double[] {-0.25, 0.25}) {
+            io.actual = new Pose2d(1.95, GOAL.getY() + offset, GOAL.getRotation());
+            io.odometry = GOAL;
+            io.rightwardDriftPerMeter = 0.14;
+            HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+                () -> io.now, () -> io.enabled, kHopperApproachMaxSpeedMetersPerSecond,
+                reference, 0.10);
+            command.initialize();
+            run(command, io);
+            assertTrue(io.success, io.status + "; actual=" + io.actual);
+            assertEquals(GOAL.getY() + 0.10, io.actual.getY(),
+                kHopperAlignLateralToleranceMeters);
+            assertEquals(GOAL.getX(), io.actual.getX(), kHopperAlignToleranceMeters);
+            assertEquals(GOAL, reference.startingPose(), "The known starting placement stays centered");
+            command.end(false);
+        }
+    }
+
+    @Test
+    void driverStationLeftTrimMirrorsOnRedWithoutChangingHeadingOrStandOff() {
+        Pose2d blue = HopperTagAlignmentCommand.withDriverStationLeftTrim(GOAL, 0.10);
+        Pose2d redReference = new Pose2d(13.1, GOAL.getY(), Rotation2d.kZero);
+        Pose2d red = HopperTagAlignmentCommand.withDriverStationLeftTrim(redReference, 0.10);
+        assertEquals(GOAL.getY() + 0.10, blue.getY(), 1e-9);
+        assertEquals(redReference.getY() - 0.10, red.getY(), 1e-9);
+        assertEquals(GOAL.getX(), blue.getX(), 1e-9);
+        assertEquals(redReference.getX(), red.getX(), 1e-9);
+        assertEquals(GOAL.getRotation(), blue.getRotation());
+        assertEquals(redReference.getRotation(), red.getRotation());
+    }
 
     @Test
     void tag26AloneCannotStartOrContinueTheReturnCorrection() {
@@ -58,13 +127,13 @@ class HopperTagAlignmentCommandTest {
     }
 
     @Test
-    void savedPairCorrectsActualHeadingAndTranslationEvenWhenGyroAndTag26ImageSayCentered() {
+    void gyroAndPairCorrectActualHeadingAndTranslationEvenWhenTag26ImageSaysCentered() {
         FakeDrive io = new FakeDrive(GOAL);
         var reference = captureStartView(io, GOAL, 26);
         double yaw = Math.atan2(0.20, kHopperTagStandOffMeters);
         io.actual = new Pose2d(GOAL.getX(), GOAL.getY() - 0.20,
             GOAL.getRotation().plus(Rotation2d.fromRadians(yaw)));
-        io.odometry = GOAL; // The gyro/odometry falsely claim a square centered robot.
+        io.odometry = new Pose2d(GOAL.getTranslation(), io.actual.getRotation());
         assertEquals(0, io.imageAngleDegrees(), 1e-9);
         assertNotEquals(reference.companionImageHorizontalDegrees(), io.companionImageAngleDegrees(), 1.5);
         HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
@@ -95,14 +164,16 @@ class HopperTagAlignmentCommandTest {
     }
 
     @Test
-    void seedsGyroFieldHeadingFromTagInsteadOfAssumingRobotWasPlacedAtCorrectAngle() {
+    void aBadGyroFieldReferenceStopsInsteadOfReseedingHeadingFromTheCamera() {
         FakeDrive io = new FakeDrive(new Pose2d(CAMERA_GOAL.getX(), CAMERA_GOAL.getY() - 0.2, CAMERA_GOAL.getRotation()));
         io.odometry = new Pose2d(CAMERA_GOAL.getTranslation(), Rotation2d.kZero);
         HopperTagAlignmentCommand command = command(io);
         command.initialize();
         run(command, io);
-        assertTrue(io.success, io.status + "; actual=" + io.actual + "; image=" + io.imageAngleDegrees());
-        assertTrue(io.actual.getTranslation().getDistance(CAMERA_GOAL.getTranslation()) < 0.04);
+        assertFalse(io.success);
+        assertFalse(io.moved);
+        assertEquals(0, io.odometry.getRotation().getDegrees(), 1e-9);
+        assertTrue(io.status.contains("gyro field heading"));
     }
 
     @Test
@@ -136,15 +207,15 @@ class HopperTagAlignmentCommandTest {
     }
 
     @Test
-    void doesNotUseGyroOnlyPoseWhenIndependentPairedHeadingIsUnavailable() {
+    void usesRobotGyroEvenWhenTheCameraHasNoIndependentHeading() {
         FakeDrive io = new FakeDrive(new Pose2d(CAMERA_GOAL.getX(), CAMERA_GOAL.getY() - 0.2, CAMERA_GOAL.getRotation()));
         io.reliableHeading = false;
         HopperTagAlignmentCommand command = command(io);
         command.initialize();
         run(command, io);
-        assertFalse(io.moved);
-        assertFalse(io.acquired);
-        assertFalse(io.success);
+        assertTrue(io.moved);
+        assertTrue(io.acquired);
+        assertTrue(io.success, io.status + "; actual=" + io.actual);
     }
 
     @Test
@@ -482,9 +553,13 @@ class HopperTagAlignmentCommandTest {
         double cameraYawOffsetRadians;
         boolean imageAvailable = true;
         boolean companionAvailable = true;
+        boolean fullView;
         String status = "";
 
-        FakeDrive(Pose2d actual) { this.actual = actual; }
+        FakeDrive(Pose2d actual) {
+            this.actual = actual;
+            odometry = new Pose2d(GOAL.getTranslation(), actual.getRotation());
+        }
 
         Translation2d cameraPosition() {
             return actual.getTranslation().plus(cameraOffsetRobot.rotateBy(actual.getRotation()));
@@ -501,6 +576,16 @@ class HopperTagAlignmentCommandTest {
             // Tag 25 shares tag 26's face, 35.56 cm toward positive field Y.
             return Math.toDegrees(MathUtil.angleModulus(camera.getRotation().getRadians() + cameraYawOffsetRadians
                 - Math.atan2(camera.getY() + 0.3556, kHopperTagStandOffMeters + camera.getX())));
+        }
+
+        double verticalAngleDegrees(boolean companion) {
+            if (!fullView) { return Double.NaN; }
+            var photo = HopperViewAlignment.photo();
+            double target = companion ? photo.companionY() : photo.mainY();
+            double referenceDistance = kHopperTagStandOffMeters + cameraOffsetRobot.getX();
+            double currentDistance = kHopperTagStandOffMeters
+                + new Pose2d(cameraPosition(), actual.getRotation()).relativeTo(TAG_REFERENCE).getX();
+            return Math.toDegrees(Math.atan(Math.tan(Math.toRadians(target)) * referenceDistance / currentDistance));
         }
 
         void step() {
@@ -542,7 +627,7 @@ class HopperTagAlignmentCommandTest {
             lastFrame = now;
             double imageAngle = imageAngleDegrees();
             double companionAngle = companionImageAngleDegrees();
-            boolean pair = imageAvailable && companionAvailable && reliableHeading
+            boolean pair = imageAvailable && companionAvailable
                 && Math.abs(imageAngle) < 70 && Math.abs(companionAngle) < 70;
             Pose2d relative = new Pose2d(actual.getX(), actual.getY() + visionLateralBiasMeters,
                 actual.getRotation()).relativeTo(TAG_REFERENCE);
@@ -553,7 +638,8 @@ class HopperTagAlignmentCommandTest {
                 reliableHeading ? actual.getRotation().getDegrees() + independentHeadingBiasDegrees : Double.NaN,
                 cameraRelative.getY(), kHopperTagStandOffMeters + cameraRelative.getX() + visionOutwardBiasMeters,
                 imageAvailable && Math.abs(imageAngle) < 70.0 ? imageAngle : Double.NaN,
-                companionAvailable && Math.abs(companionAngle) < 70.0 ? companionAngle : Double.NaN, pair));
+                companionAvailable && Math.abs(companionAngle) < 70.0 ? companionAngle : Double.NaN, pair,
+                verticalAngleDegrees(false), verticalAngleDegrees(true)));
         }
     }
 }

@@ -44,7 +44,7 @@ class LimelightHopperTargetTest {
     }
 
     @Test
-    void usesBothHopperTagsAndIndependentHeadingEvenWhenSuppliedGyroHeadingIsWrong() {
+    void usesGyroHeadingAndPairedMegatag2EvenWhenMegatag1ReportsADifferentHeading() {
         try (var instance = NetworkTableInstance.create()) {
             var limelight = new Limelight(instance, "test");
             var table = instance.getTable("test");
@@ -54,18 +54,18 @@ class LimelightHopperTargetTest {
                 frame[0] -= 0.6;
                 frame[1] -= 0.25;
                 frame[5] = 167;
-                paired.set(frame, 10_000_000);
-                gyroBased.set(new double[] {GOAL.getX(), GOAL.getY(), 0, 0, 0, 180, 40, 1, 0, 1, 0.2}, 10_000_000);
+                paired.set(new double[] {GOAL.getX(), GOAL.getY(), 0, 0, 0, 167, 40, 1, 0, 1, 0.2}, 10_000_000);
+                gyroBased.set(frame, 10_000_000);
                 var target = limelight.getNewHopperTarget(26, GOAL, 180, 10.02).orElseThrow();
                 assertTrue(target.hasHopperPair());
-                assertEquals(167, target.fieldHeadingDegrees(), 1e-9);
+                assertEquals(180, target.fieldHeadingDegrees(), 1e-9);
                 assertEquals(-6, target.imageHorizontalDegrees(), 1e-9);
                 assertEquals(-31, target.companionImageHorizontalDegrees(), 1e-9);
                 assertEquals(0.25, target.rightMeters(), 1e-9);
                 assertEquals(GOAL.getX() - 0.6, target.toFieldPose(GOAL).getX(), 1e-9);
                 assertTrue(limelight.getHopperSource().contains("25 + 26"));
-                // An MT2 update cannot masquerade as another independent two-tag capture.
-                assertFalse(limelight.getNewHopperTarget(26, GOAL, 180, 10.02).orElseThrow().hasHopperPair());
+                assertEquals("gyro + MegaTag2 pair: 25 + 26", limelight.getHopperSource());
+                // A second poll must not reuse the MT2 capture. MT1 can only be an unpaired fallback.
                 assertTrue(limelight.getNewHopperTarget(26, GOAL, 180, 10.02).isEmpty());
             }
         }

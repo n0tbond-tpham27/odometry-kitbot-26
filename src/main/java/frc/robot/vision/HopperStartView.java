@@ -16,7 +16,14 @@ import frc.robot.vision.Limelight.TargetMeasurement;
 public final class HopperStartView {
     public record Reference(int tagId, Pose2d startingPose, double robotOutwardMeters,
             double cameraOutwardMeters, double imageHorizontalDegrees,
-            double companionImageHorizontalDegrees, Pose2d pairedFieldPose) {}
+            double companionImageHorizontalDegrees, Pose2d pairedFieldPose,
+            double imageVerticalDegrees, double companionImageVerticalDegrees) {}
+
+    private final boolean m_requirePhotoMatch;
+
+    public HopperStartView() { this(false); }
+
+    public HopperStartView(boolean requirePhotoMatch) { m_requirePhotoMatch = requirePhotoMatch; }
 
     private int m_tagId;
     private Pose2d m_startingPose;
@@ -28,6 +35,8 @@ public final class HopperStartView {
     private double m_cameraRangeSum;
     private double m_angleSum;
     private double m_companionAngleSum;
+    private double m_verticalSum;
+    private double m_companionVerticalSum;
     private Translation2d m_positionSum;
     private double m_headingSin;
     private double m_headingCos;
@@ -62,6 +71,10 @@ public final class HopperStartView {
             return;
         }
         double age = now - sample.timestampSeconds();
+        if (m_requirePhotoMatch && !HopperViewAlignment.photo().matches(sample, kHubPhotoCaptureToleranceDegrees)) {
+            clearCluster();
+            return;
+        }
         if (!sample.hasHopperPair() || !Double.isFinite(sample.fieldHeadingDegrees())
                 || !Double.isFinite(sample.rightMeters())
                 || !Double.isFinite(sample.companionImageHorizontalDegrees())
@@ -78,6 +91,10 @@ public final class HopperStartView {
                 || Math.abs(sample.cameraOutwardMeters() - m_first.cameraOutwardMeters()) > kHopperStartViewMaxRangeSpreadMeters
                 || Math.abs(sample.imageHorizontalDegrees() - m_first.imageHorizontalDegrees()) > kHopperStartViewMaxAngleSpreadDegrees
                 || Math.abs(sample.companionImageHorizontalDegrees() - m_first.companionImageHorizontalDegrees()) > kHopperStartViewMaxAngleSpreadDegrees
+                || (Double.isFinite(sample.imageVerticalDegrees()) && Double.isFinite(m_first.imageVerticalDegrees())
+                    && Math.abs(sample.imageVerticalDegrees() - m_first.imageVerticalDegrees()) > kHopperStartViewMaxAngleSpreadDegrees)
+                || (Double.isFinite(sample.companionImageVerticalDegrees()) && Double.isFinite(m_first.companionImageVerticalDegrees())
+                    && Math.abs(sample.companionImageVerticalDegrees() - m_first.companionImageVerticalDegrees()) > kHopperStartViewMaxAngleSpreadDegrees)
                 || Math.abs(MathUtil.angleModulus(Math.toRadians(sample.fieldHeadingDegrees()
                     - m_first.fieldHeadingDegrees()))) > Math.toRadians(kHopperStartViewMaxAngleSpreadDegrees)
                 || sample.toFieldPose(m_startingPose).getTranslation().getDistance(
@@ -90,13 +107,16 @@ public final class HopperStartView {
         m_cameraRangeSum += sample.cameraOutwardMeters();
         m_angleSum += sample.imageHorizontalDegrees();
         m_companionAngleSum += sample.companionImageHorizontalDegrees();
+        m_verticalSum += sample.imageVerticalDegrees();
+        m_companionVerticalSum += sample.companionImageVerticalDegrees();
         m_positionSum = m_positionSum.plus(sample.toFieldPose(m_startingPose).getTranslation());
         m_headingSin += Math.sin(Math.toRadians(sample.fieldHeadingDegrees()));
         m_headingCos += Math.cos(Math.toRadians(sample.fieldHeadingDegrees()));
         if (++m_frames >= kHopperTagAcquireFrames) {
             m_reference = new Reference(m_tagId, m_startingPose, m_robotRangeSum / m_frames,
                 m_cameraRangeSum / m_frames, m_angleSum / m_frames, m_companionAngleSum / m_frames,
-                new Pose2d(m_positionSum.div(m_frames), new Rotation2d(m_headingCos, m_headingSin)));
+                new Pose2d(m_positionSum.div(m_frames), new Rotation2d(m_headingCos, m_headingSin)),
+                m_verticalSum / m_frames, m_companionVerticalSum / m_frames);
         }
     }
 
@@ -117,6 +137,8 @@ public final class HopperStartView {
         m_cameraRangeSum = 0.0;
         m_angleSum = 0.0;
         m_companionAngleSum = 0.0;
+        m_verticalSum = 0.0;
+        m_companionVerticalSum = 0.0;
         m_positionSum = Translation2d.kZero;
         m_headingSin = 0.0;
         m_headingCos = 0.0;

@@ -67,6 +67,7 @@ import frc.robot.vision.Limelight.PoseMeasurement;
 import frc.robot.vision.VisionPoseReacquisition;
 import frc.robot.vision.HopperStartView;
 import frc.robot.vision.HopperStartView.Reference;
+import frc.robot.vision.HopperViewAlignment;
 import frc.robot.commands.CaptureHopperStartViewCommand;
 import frc.robot.commands.ShootingWiggleController;
 import frc.robot.commands.HopperTagAlignmentCommand;
@@ -102,7 +103,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     // --- Vision ---
     private final Limelight m_limelight = new Limelight(kLimelightName);
-    private final HopperStartView m_hopperStartView = new HopperStartView();
+    private final HopperStartView m_hopperStartView = new HopperStartView(true);
     /** Most recent vision position that passed the checks in updateVision()... */
     private Pose2d m_lastAcceptedVisionPose = null;
     /** ...and when it was accepted (FPGA seconds). */
@@ -943,9 +944,34 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
                     ? "saved startup tag view" : "known centered pose: startup view unavailable");
             }
             return new HopperTagAlignmentCommand(this, this, getHopperCenterPose(), tagId,
-                Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed, reference);
+                Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed, reference,
+                useStartView ? kHopperReturnLeftTrimMeters : 0.0, useStartView);
         }, Set.of(this))
             .withName("Align On Hopper Tag");
+    }
+
+    @Override
+    public Rotation2d getHeadingAt(double timestampSeconds) {
+        return m_poseEstimator.sampleAt(timestampSeconds).map(Pose2d::getRotation)
+            .orElseGet(() -> getPose().getRotation());
+    }
+
+    @Override
+    public void reportHopperViewTarget(HopperViewAlignment.View target, String source) {
+        SmartDashboard.putString("Vision/Hopper Alignment Target", "gyro square + both tags in hub reference view");
+        SmartDashboard.putString("Vision/Hub View Source", source);
+        SmartDashboard.putString("Vision/Hub Heading Source", "robot gyro; camera yaw ignored");
+        SmartDashboard.putNumber("Vision/Hopper Image Target (deg)", target.mainX());
+        SmartDashboard.putNumber("Vision/Hopper Companion Image Target (deg)", target.companionX());
+        SmartDashboard.putNumber("Vision/Hub Main TY Target (deg)", target.mainY());
+        SmartDashboard.putNumber("Vision/Hub Companion TY Target (deg)", target.companionY());
+    }
+
+    @Override
+    public void reportHopperViewError(double mainY, double companionY, double headingDegrees) {
+        SmartDashboard.putNumber("Vision/Hub Main TY Error (deg)", mainY);
+        SmartDashboard.putNumber("Vision/Hub Companion TY Error (deg)", companionY);
+        SmartDashboard.putNumber("Vision/Hub Gyro Heading Error (deg)", headingDegrees);
     }
 
     @Override
@@ -1016,8 +1042,8 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     @Override
     public void fuseHopperPairPose(Pose2d pose, double timestampSeconds) {
-        // Both hopper tags independently constrain heading; MT2's gyro-based yaw cannot.
-        m_poseEstimator.addVisionMeasurement(pose, timestampSeconds, VecBuilder.fill(0.015, 0.015, Math.toRadians(2.0)));
+        // The gyro stays authoritative even if an older caller supplies a camera yaw.
+        fuseHopperTagPose(pose, timestampSeconds);
     }
 
     @Override

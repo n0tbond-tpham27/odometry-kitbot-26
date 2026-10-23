@@ -100,7 +100,7 @@ class HopperAutoStartTest {
                 assertEquals(0, pathOutputs, "No path movement before the initial shot");
                 var saved = START_VIEW.getReference().orElseThrow();
                 assertEquals(red ? 10 : 26, saved.tagId());
-                assertEquals(6.0, saved.imageHorizontalDegrees(), 1e-9);
+                assertEquals(frc.robot.vision.HopperViewAlignment.photo().mainX(), saved.imageHorizontalDegrees(), 1e-9);
                 assertEquals(expected, saved.startingPose());
                 assertFalse(drive.active, "Startup capture must release vision before shooting");
                 auto.end(true);
@@ -138,8 +138,10 @@ class HopperAutoStartTest {
             }
             lastFrame = now;
             // An independent PnP yaw error must never tilt the trusted startup heading.
+            var photo = frc.robot.vision.HopperViewAlignment.photo();
             return Optional.of(new TargetMeasurement(tagId, 0, kHopperTagStandOffMeters,
-                now - 0.02, RED.get() ? -5 : 175, -0.04, 0.4, 6.0, -25.0, true));
+                now - 0.02, RED.get() ? -5 : 175, -0.04, 0.4, photo.mainX(), photo.companionX(), true,
+                photo.mainY(), photo.companionY()));
         }
     }
 }

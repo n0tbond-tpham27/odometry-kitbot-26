@@ -41,7 +41,15 @@ public class Limelight {
     /** Robot and camera positions relative to the selected tag's center, independent of odometry. */
     public record TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
             double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters,
-            double imageHorizontalDegrees, double companionImageHorizontalDegrees, boolean hasHopperPair) {
+            double imageHorizontalDegrees, double companionImageHorizontalDegrees, boolean hasHopperPair,
+            double imageVerticalDegrees, double companionImageVerticalDegrees) {
+        public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
+                double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters,
+                double imageHorizontalDegrees, double companionImageHorizontalDegrees, boolean hasHopperPair) {
+            this(tagId, rightMeters, outwardMeters, timestampSeconds, fieldHeadingDegrees, cameraRightMeters,
+                cameraOutwardMeters, imageHorizontalDegrees, companionImageHorizontalDegrees, hasHopperPair,
+                Double.NaN, Double.NaN);
+        }
         public TargetMeasurement(int tagId, double rightMeters, double outwardMeters, double timestampSeconds,
                 double fieldHeadingDegrees, double cameraRightMeters, double cameraOutwardMeters,
                 double imageHorizontalDegrees) {
@@ -88,6 +96,7 @@ public class Limelight {
     private Translation2d m_cameraOffsetRobot = Translation2d.kZero;
     private String m_hopperSource = "waiting for vision";
     private final edu.wpi.first.networktables.DoublePublisher m_priorityPub;
+    private final edu.wpi.first.networktables.DoublePublisher m_imuModePub;
     private long m_lastTargetTimestampMicros = 0;
     private long m_lastPairTimestampMicros = 0;
     /** NetworkTables timestamp of the last result returned, so each frame is used only once. */
@@ -116,6 +125,8 @@ public class Limelight {
             .subscribe(new double[0], PubSubOption.keepDuplicates(true));
         m_cameraRobotPoseSub = table.getDoubleArrayTopic("camerapose_robotspace").subscribe(new double[0]);
         m_priorityPub = table.getDoubleTopic("priorityid").publish();
+        m_imuModePub = table.getDoubleTopic("imumode_set").publish();
+        m_imuModePub.set(0); // LL4 MT2 uses the external robot gyro, not camera-derived yaw.
     }
 
     /** Prefer the independent two-tag pose; other sources are marked as unpaired. */
@@ -125,15 +136,16 @@ public class Limelight {
             // Limelight robot-space Y is right-positive; WPILib robot-space Y is left-positive.
             m_cameraOffsetRobot = new Translation2d(mount[0], -mount[1]);
         }
-        // MegaTag1's multi-tag solution independently measures robot yaw. MegaTag2 uses
-        // the gyro heading we supplied, so it cannot resolve yaw-versus-lateral error here.
-        TimestampedDoubleArray pairFrame = m_tagFieldPoseSub.getAtomic();
+        // The gyro owns heading. MT2 uses that gyro orientation to solve field X/Y;
+        // the two raw tag observations are also needed to restore the photographed view.
+        TimestampedDoubleArray pairFrame = m_botPoseSub.getAtomic();
         if (pairFrame.timestamp != m_lastPairTimestampMicros) {
             Optional<TargetMeasurement> pair = pairedTargetFromFrame(pairFrame.value, pairFrame.timestamp,
-                tagId, goal, m_cameraOffsetRobot, now);
+                tagId, goal, gyroHeadingDegrees, m_cameraOffsetRobot, now);
             if (pair.isPresent()) {
                 m_lastPairTimestampMicros = pairFrame.timestamp;
-                m_hopperSource = "MegaTag1 paired pose: " + companionTagId(tagId) + " + " + tagId;
+                m_lastTimestampMicros = pairFrame.timestamp;
+                m_hopperSource = "gyro + MegaTag2 pair: " + companionTagId(tagId) + " + " + tagId;
                 return pair;
             }
         }
@@ -209,7 +221,8 @@ public class Limelight {
     private static TargetMeasurement withImageAngle(TargetMeasurement target, double angle) {
         return new TargetMeasurement(target.tagId(), target.rightMeters(), target.outwardMeters(),
             target.timestampSeconds(), target.fieldHeadingDegrees(), target.cameraRightMeters(),
-            target.cameraOutwardMeters(), angle, target.companionImageHorizontalDegrees(), target.hasHopperPair());
+            target.cameraOutwardMeters(), angle, target.companionImageHorizontalDegrees(), target.hasHopperPair(),
+            target.imageVerticalDegrees(), target.companionImageVerticalDegrees());
     }
 
     public static int companionTagId(int tagId) {
@@ -219,6 +232,12 @@ public class Limelight {
 
     static Optional<TargetMeasurement> pairedTargetFromFrame(double[] data, long timestampMicros,
             int tagId, Pose2d goal, Translation2d cameraOffset, double now) {
+        return pairedTargetFromFrame(data, timestampMicros, tagId, goal,
+            goal.getRotation().getDegrees(), cameraOffset, now);
+    }
+
+    static Optional<TargetMeasurement> pairedTargetFromFrame(double[] data, long timestampMicros,
+            int tagId, Pose2d goal, double gyroHeadingDegrees, Translation2d cameraOffset, double now) {
         Optional<PoseMeasurement> parsed = parseFieldPose(data, timestampMicros);
         if (companionTagId(tagId) < 0 || parsed.isEmpty() || parsed.get().tagCount() < 2) {
             return Optional.empty();
@@ -226,6 +245,8 @@ public class Limelight {
         PoseMeasurement frame = parsed.get();
         double mainAngle = Double.NaN;
         double companionAngle = Double.NaN;
+        double mainVertical = Double.NaN;
+        double companionVertical = Double.NaN;
         for (int i = 0; i < frame.tagCount(); i++) {
             int base = kMinLength + i * kValuesPerTag;
             if (base + 6 >= data.length || !Double.isFinite(data[base + 6])
@@ -234,8 +255,10 @@ public class Limelight {
             }
             if (data[base] == tagId) {
                 mainAngle = data[base + 1];
+                mainVertical = data[base + 2];
             } else if (data[base] == companionTagId(tagId)) {
                 companionAngle = data[base + 1];
+                companionVertical = data[base + 2];
             }
         }
         if (!validImageAngle(mainAngle) || !validImageAngle(companionAngle)
@@ -243,14 +266,14 @@ public class Limelight {
             return Optional.empty();
         }
         Optional<TargetMeasurement> target = targetFromFieldPose(frame, tagId, goal,
-            frame.pose().getRotation().getDegrees(), cameraOffset, now);
+            gyroHeadingDegrees, cameraOffset, now);
         if (target.isEmpty()) {
             return target;
         }
         TargetMeasurement value = target.get();
         return Optional.of(new TargetMeasurement(tagId, value.rightMeters(), value.outwardMeters(),
             value.timestampSeconds(), value.fieldHeadingDegrees(), value.cameraRightMeters(),
-            value.cameraOutwardMeters(), mainAngle, companionAngle, true));
+            value.cameraOutwardMeters(), mainAngle, companionAngle, true, mainVertical, companionVertical));
     }
 
     /** Select the hopper tag for single-target measurements without filtering field localization. */

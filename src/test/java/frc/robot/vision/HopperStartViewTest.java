@@ -36,6 +36,27 @@ class HopperStartViewTest {
     }
 
     @Test
+    void productionCaptureRefinesThePhotoInsteadOfLearningAnUnrelatedStartingView() {
+        var view = new HopperStartView(true);
+        view.reset(26, START, 10);
+        for (int i = 1; i <= 4; i++) {
+            view.add(sample(26, 10 + i * 0.04, 0.4, 0), STOPPED, 10.02 + i * 0.04);
+        }
+        assertTrue(view.getReference().isEmpty());
+        var photo = HopperViewAlignment.photo();
+        for (int i = 1; i <= 3; i++) {
+            double capture = 10.20 + i * 0.04;
+            view.add(new TargetMeasurement(26, 0, kHopperTagStandOffMeters, capture,
+                180, 0, 1.05, photo.mainX() + 0.4, photo.companionX() - 0.2, true,
+                photo.mainY() + 0.3, photo.companionY() + 0.1), STOPPED, capture + 0.02);
+        }
+        var reference = view.getReference().orElseThrow();
+        assertEquals(photo.mainX() + 0.4, reference.imageHorizontalDegrees(), 1e-9);
+        assertEquals(photo.mainY() + 0.3, reference.imageVerticalDegrees(), 1e-9);
+        assertEquals(photo.companionY() + 0.1, reference.companionImageVerticalDegrees(), 1e-9);
+    }
+
+    @Test
     void aSingleTagOrGyroBasedPoseCannotBeSavedAsThePairedStartupView() {
         var view = new HopperStartView();
         view.reset(26, START, 10);

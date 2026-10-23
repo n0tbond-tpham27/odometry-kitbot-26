@@ -19,11 +19,13 @@ import frc.robot.vision.HopperAlignmentController;
 import frc.robot.vision.HopperStartView.Reference;
 import frc.robot.vision.Limelight;
 import frc.robot.vision.Limelight.TargetMeasurement;
+import frc.robot.vision.HopperViewAlignment;
 
 /** Returns the robot to its startup position and heading using both hopper tags. */
 public final class HopperTagAlignmentCommand extends Command {
     public interface IO {
         Pose2d getPose();
+        default Rotation2d getHeadingAt(double timestampSeconds) { return getPose().getRotation(); }
         ChassisSpeeds getRobotRelativeSpeeds();
         void resetOdometry(Pose2d pose);
         void driveRobotRelative(ChassisSpeeds speeds);
@@ -40,23 +42,28 @@ public final class HopperTagAlignmentCommand extends Command {
         default void reportHopperCompanionImageError(double degrees) {}
         default void reportHopperLeftTarget(double meters) {}
         default void reportHopperStartViewTarget(Reference reference) {}
+        default void reportHopperViewTarget(HopperViewAlignment.View target, String source) {}
+        default void reportHopperViewError(double mainY, double companionY, double headingDegrees) {}
         default void onHopperPoseAcquired() {}
     }
 
     private final IO m_io;
     private final Pose2d m_goal;
+    private final Pose2d m_referencePose;
+    private final double m_leftTrimMeters;
     private final int m_tagId;
     private final DoubleSupplier m_clock;
     private final BooleanSupplier m_visionEnabled;
     private final double m_maxSpeed;
     private final Reference m_startView;
     private final String m_pairName;
+    private final HopperViewAlignment.View m_viewTarget;
+    private final boolean m_matchView;
+    private boolean m_usingViewPose;
     private HopperAlignmentController m_controller;
     private Translation2d m_sum;
     private Translation2d m_clusterFirst;
     private int m_frames;
-    private double m_headingSin;
-    private double m_headingCos;
     private int m_confirmations;
     private double m_started;
     private double m_acquireStarted;
@@ -80,9 +87,25 @@ public final class HopperTagAlignmentCommand extends Command {
 
     public HopperTagAlignmentCommand(IO io, Subsystem requirement, Pose2d goal, int tagId,
             DoubleSupplier clock, BooleanSupplier visionEnabled, double maxSpeed, Reference startView) {
+        this(io, requirement, goal, tagId, clock, visionEnabled, maxSpeed, startView, 0.0);
+    }
+
+    public HopperTagAlignmentCommand(IO io, Subsystem requirement, Pose2d goal, int tagId,
+            DoubleSupplier clock, BooleanSupplier visionEnabled, double maxSpeed, Reference startView,
+            double leftTrimMeters) {
+        this(io, requirement, goal, tagId, clock, visionEnabled, maxSpeed, startView, leftTrimMeters, false);
+    }
+
+    public HopperTagAlignmentCommand(IO io, Subsystem requirement, Pose2d goal, int tagId,
+            DoubleSupplier clock, BooleanSupplier visionEnabled, double maxSpeed, Reference startView,
+            double leftTrimMeters, boolean usePhotoFallback) {
         m_io = io;
         m_startView = startView != null && startView.tagId() == tagId ? startView : null;
-        m_goal = m_startView != null ? m_startView.startingPose() : goal;
+        m_referencePose = m_startView != null ? m_startView.startingPose() : goal;
+        m_goal = withDriverStationLeftTrim(m_referencePose, leftTrimMeters);
+        m_leftTrimMeters = leftTrimMeters;
+        m_matchView = Math.abs(leftTrimMeters) < 1e-9 && (m_startView != null || usePhotoFallback);
+        m_viewTarget = m_startView != null ? HopperViewAlignment.from(m_startView) : HopperViewAlignment.photo();
         m_tagId = tagId;
         m_pairName = Limelight.companionTagId(tagId) + " + " + tagId;
         m_clock = clock;
@@ -100,14 +123,21 @@ public final class HopperTagAlignmentCommand extends Command {
         m_lastRight = Double.NaN;
         m_lastOutwardError = Double.NaN;
         m_controller = null;
+        m_usingViewPose = false;
         clearCluster();
         m_confirmations = 0;
         m_finished = false;
         m_success = false;
         m_io.beginHopperTagAlignment(m_tagId);
-        m_io.reportHopperLeftTarget(0.0);
         if (m_startView != null) {
             m_io.reportHopperStartViewTarget(m_startView);
+        }
+        if (m_startView == null || Math.abs(m_leftTrimMeters) > 1e-9) {
+            m_io.reportHopperLeftTarget(m_leftTrimMeters);
+        }
+        if (m_matchView) {
+            m_io.reportHopperViewTarget(m_viewTarget, m_startView != null ? "live capture matching hub photo"
+                : "photo estimate using LL4 factory lens");
         }
         m_io.stopMotors();
         report("waiting for hopper tags " + m_pairName);
@@ -120,7 +150,7 @@ public final class HopperTagAlignmentCommand extends Command {
             finish(false, "alignment failed: vision disabled");
             return;
         }
-        if (now - m_started >= (m_startView != null ? kHopperReturnAlignTimeoutSeconds : kHopperAlignTimeoutSeconds)) {
+        if (now - m_started >= (m_startView != null || m_matchView ? kHopperReturnAlignTimeoutSeconds : kHopperAlignTimeoutSeconds)) {
             finish(false, "alignment timed out: hopper position and heading not restored using tags " + m_pairName);
             return;
         }
@@ -130,6 +160,11 @@ public final class HopperTagAlignmentCommand extends Command {
         ChassisSpeeds speeds = m_io.getRobotRelativeSpeeds();
         boolean stopped = Math.abs(speeds.vxMetersPerSecond) <= kDriveStraightSpeedToleranceMetersPerSecond
             && Math.abs(speeds.omegaRadiansPerSecond) <= kHopperAlignTurnSpeedToleranceRadPerSec;
+        if (m_controller == null && Math.abs(m_io.getPose().getRotation().minus(m_goal.getRotation()).getRadians())
+                > Math.toRadians(75.0)) {
+            finish(false, "alignment failed: gyro field heading needs the known hopper start reference");
+            return;
+        }
         if (m_controller == null && !stopped) {
             clearCluster();
             m_captureCutoff = now;
@@ -144,14 +179,31 @@ public final class HopperTagAlignmentCommand extends Command {
             TargetMeasurement measurement = sample.get();
             double previousCapture = m_lastCapture;
             m_lastCapture = measurement.timestampSeconds();
-            Pose2d rawPose = measurement.toFieldPose(m_goal);
+            // A return trim moves the physical goal, never the measured coordinate frame.
+            Pose2d rawPose = measurement.toFieldPose(m_referencePose);
+            Rotation2d gyroHeading = m_io.getHeadingAt(measurement.timestampSeconds());
             // Compare independent two-tag poses in the startup frame. This measures yaw
             // separately from sideways displacement and cancels a fixed startup pose offset.
-            Pose2d directPose = m_startView == null ? rawPose : new Pose2d(
+            Pose2d directPose = m_startView == null ? new Pose2d(rawPose.getTranslation(), gyroHeading) : new Pose2d(
                 m_startView.startingPose().getTranslation().plus(rawPose.getTranslation()
                     .minus(m_startView.pairedFieldPose().getTranslation())),
-                m_startView.startingPose().getRotation().plus(rawPose.getRotation()
-                    .minus(m_startView.pairedFieldPose().getRotation())));
+                gyroHeading);
+            boolean previouslyUsingView = m_usingViewPose;
+            if (m_matchView && (m_usingViewPose
+                    || directPose.getTranslation().getDistance(m_goal.getTranslation()) < 0.25)) {
+                Optional<Pose2d> visual = HopperViewAlignment.estimatePose(measurement, m_viewTarget, m_goal, gyroHeading);
+                if (visual.isPresent()) {
+                    directPose = visual.get();
+                    m_usingViewPose = true;
+                } else {
+                    m_usingViewPose = false;
+                }
+            }
+            if (m_controller != null && previouslyUsingView != m_usingViewPose) {
+                m_controller = new HopperAlignmentController(m_goal,
+                    m_usingViewPose ? kHopperViewFinePositionToleranceMeters : kHopperAlignToleranceMeters, m_maxSpeed);
+                m_controller.reset(directPose);
+            }
             Pose2d error = directPose.relativeTo(m_goal);
             m_lastRight = error.getY();
             m_lastOutwardError = error.getX();
@@ -159,38 +211,42 @@ public final class HopperTagAlignmentCommand extends Command {
                 - (m_startView == null ? 0.0 : m_startView.imageHorizontalDegrees()));
             m_io.reportHopperCompanionImageError(m_startView == null ? Double.NaN
                 : measurement.companionImageHorizontalDegrees() - m_startView.companionImageHorizontalDegrees());
+            if (m_matchView) {
+                m_io.reportHopperImageError(measurement.imageHorizontalDegrees() - m_viewTarget.mainX());
+                m_io.reportHopperCompanionImageError(measurement.companionImageHorizontalDegrees() - m_viewTarget.companionX());
+                m_io.reportHopperViewError(measurement.imageVerticalDegrees() - m_viewTarget.mainY(),
+                    measurement.companionImageVerticalDegrees() - m_viewTarget.companionY(),
+                    gyroHeading.minus(m_goal.getRotation()).getDegrees());
+            }
 
             if (m_controller == null) {
                 Translation2d position = directPose.getTranslation();
-                double heading = directPose.getRotation().getRadians();
-                boolean headingDisagrees = m_frames > 0 && Math.abs(MathUtil.angleModulus(
-                    heading - Math.atan2(m_headingSin, m_headingCos))) > Math.toRadians(10.0);
                 if (m_clusterFirst == null || m_lastCapture - previousCapture > kMaxVisionAgeSeconds
-                        || position.getDistance(m_clusterFirst) > kHopperTagMaxSpreadMeters || headingDisagrees) {
+                        || position.getDistance(m_clusterFirst) > kHopperTagMaxSpreadMeters) {
                     clearCluster();
                     m_clusterFirst = position;
                 }
                 m_sum = m_sum.plus(position);
-                m_headingSin += Math.sin(heading);
-                m_headingCos += Math.cos(heading);
                 if (++m_frames >= kHopperTagAcquireFrames) {
-                    Pose2d corrected = new Pose2d(m_sum.div(m_frames), new Rotation2d(m_headingCos, m_headingSin));
+                    Pose2d corrected = new Pose2d(m_sum.div(m_frames), m_io.getPose().getRotation());
                     m_io.resetOdometry(corrected);
                     m_io.onHopperPoseAcquired();
-                    m_controller = new HopperAlignmentController(m_goal, kHopperAlignToleranceMeters, m_maxSpeed);
+                    m_controller = new HopperAlignmentController(m_goal,
+                        m_usingViewPose ? kHopperViewFinePositionToleranceMeters : kHopperAlignToleranceMeters, m_maxSpeed);
                     m_controller.reset(corrected);
                 }
             } else {
-                m_io.fuseHopperPairPose(directPose, measurement.timestampSeconds());
+                m_io.fuseHopperTagPose(directPose, measurement.timestampSeconds());
                 // Both tag observations are required in this pose. Confirm the body pose:
                 // aiming either tag to a pixel cannot substitute for translation, and the
                 // deliberate bumper stop margin slightly changes the two image angles.
                 boolean centered = error.getTranslation().getNorm() <= kHopperAlignToleranceMeters
                     && Math.abs(error.getY()) <= kHopperAlignLateralToleranceMeters
-                    && Math.abs(error.getRotation().getRadians()) <= kHopperAlignHeadingToleranceRadians;
+                    && Math.abs(error.getRotation().getRadians()) <= kHopperAlignHeadingToleranceRadians
+                    && (!m_matchView || (m_usingViewPose && m_viewTarget.matches(measurement, kHopperImageCenterToleranceDegrees)));
                 m_confirmations = centered && stopped ? m_confirmations + 1 : 0;
                 if (m_confirmations >= kHopperTagConfirmFrames) {
-                    finish(true, "hopper position and heading restored using tags " + m_pairName);
+                    finish(true, "hopper return target reached using tags " + m_pairName);
                     return;
                 }
                 if (m_controller.isFinished() && !centered) {
@@ -220,8 +276,8 @@ public final class HopperTagAlignmentCommand extends Command {
         double predictedError = m_lastOutwardError + axialSpeed * Math.max(0.0, now - m_lastCapture);
         double stoppingDistance = Math.pow(Math.min(0.0, axialSpeed), 2)
             / (2.0 * kHopperApproachBrakingAccelMetersPerSecondSq);
-        if (requested.vxMetersPerSecond < 0.0
-                && predictedError <= stoppingDistance + kHopperApproachStopMarginMeters) {
+        double stopMargin = m_usingViewPose ? kHopperViewFineStopMarginMeters : kHopperApproachStopMarginMeters;
+        if (requested.vxMetersPerSecond < 0.0 && predictedError <= stoppingDistance + stopMargin) {
             requested = new ChassisSpeeds();
             report("braking before hopper stand-off");
         }
@@ -236,12 +292,17 @@ public final class HopperTagAlignmentCommand extends Command {
         return measurement.hasHopperPair() && measurement.tagId() == m_tagId
             && measurement.timestampSeconds() > m_captureCutoff && measurement.timestampSeconds() > m_lastCapture
             && Double.isFinite(age) && age <= kMaxVisionAgeSeconds && age >= -kVisionFutureToleranceSeconds
-            && Double.isFinite(measurement.fieldHeadingDegrees())
             && Double.isFinite(measurement.imageHorizontalDegrees())
             && Double.isFinite(measurement.companionImageHorizontalDegrees())
             && Double.isFinite(measurement.rightMeters()) && Math.abs(measurement.rightMeters()) <= kHopperTagMaxLateralMeters
             && Double.isFinite(measurement.outwardMeters()) && measurement.outwardMeters() > 0.1
             && measurement.outwardMeters() <= kHopperTagMaxRangeMeters;
+    }
+
+    /** Move the return goal toward the driver's left, mirrored with the alliance heading. */
+    public static Pose2d withDriverStationLeftTrim(Pose2d reference, double leftMeters) {
+        Translation2d shift = new Translation2d(0.0, -leftMeters).rotateBy(reference.getRotation());
+        return new Pose2d(reference.getTranslation().plus(shift), reference.getRotation());
     }
 
     /** Convert Limelight's right/outward coordinates while preserving the supplied gyro heading. */
@@ -253,8 +314,6 @@ public final class HopperTagAlignmentCommand extends Command {
         m_sum = Translation2d.kZero;
         m_clusterFirst = null;
         m_frames = 0;
-        m_headingSin = 0.0;
-        m_headingCos = 0.0;
     }
 
     private void report(String status) {

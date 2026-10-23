@@ -53,8 +53,40 @@ class AutoSpeedVariantsTest {
                 for (int i = 0; i < originalZones.size(); i++) {
                     assertEquals(originalZones.get(i).get("minWaypointRelativePos"), variantZones.get(i).get("minWaypointRelativePos"));
                     assertEquals(originalZones.get(i).get("maxWaypointRelativePos"), variantZones.get(i).get("maxWaypointRelativePos"));
-                    assertSpeedConstraints(originalZones.get(i).get("constraints"), variantZones.get(i).get("constraints"), returnMultiplier);
+                    int zoneMultiplier = "Trench Return".equals(originalZones.get(i).path("name").asText())
+                        ? 1 : returnMultiplier;
+                    assertSpeedConstraints(originalZones.get(i).get("constraints"), variantZones.get(i).get("constraints"), zoneMultiplier);
                 }
+            }
+        }
+    }
+
+    @Test
+    void allReturnTrenchTrajectoriesStayCenteredAndSlowBeforeThePostTrenchTurn() throws Exception {
+        RobotConfig config = RobotConfig.fromGUISettings();
+        for (String side : new String[] {"L", "R"}) {
+            double laneY = side.equals("L") ? 7.424674 : 0.644398;
+            for (String suffix : new String[] {"", " 2x", " 3x"}) {
+                String name = "hopper front test " + side + suffix;
+                var trajectory = PathPlannerPath.fromPathFile(name).getIdealTrajectory(config).orElseThrow();
+                int crossingStates = 0;
+                var states = trajectory.getStates();
+                for (int i = 1; i < states.size(); i++) {
+                    var current = states.get(i);
+                    var previous = states.get(i - 1);
+                    if (current.pose.getX() > 3.5 && current.pose.getX() < 5.7
+                            && Math.abs(current.pose.getY() - laneY) < 0.2
+                            && Math.abs(Math.abs(current.pose.getRotation().getDegrees()) - 180.0) < 2.0
+                            && Math.abs(Math.abs(previous.pose.getRotation().getDegrees()) - 180.0) < 2.0) {
+                        crossingStates++;
+                        assertEquals(laneY, current.pose.getY(), 0.005, name);
+                        double dt = current.timeSeconds - previous.timeSeconds;
+                        assertTrue(dt > 0, name);
+                        double speed = current.pose.getTranslation().getDistance(previous.pose.getTranslation()) / dt;
+                        assertTrue(speed <= 0.46, name + " return trench speed=" + speed);
+                    }
+                }
+                assertTrue(crossingStates > 5, name + " must contain a slow straight return through the trench");
             }
         }
     }
