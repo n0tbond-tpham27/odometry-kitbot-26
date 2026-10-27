@@ -35,6 +35,11 @@ public final class Autos {
         return HOPPER_CENTER_AUTOS.contains(autoName);
     }
 
+    public static double hopperReturnLeftTrim(String fallbackPathName) {
+        return Set.of("reset back L", "reset back L 2x", "reset back L 3x").contains(fallbackPathName)
+            ? AutoConstants.kHopperReturnLeftTrimMeters : 0.0;
+    }
+
     /** Trust the team's centered, square placement; leave subsequent vision corrections to the return. */
     public static Command hopperStart(HopperTagAlignmentCommand.IO drive, Subsystem requirement,
             Supplier<Pose2d> startingPose) {
@@ -120,13 +125,14 @@ public final class Autos {
     public static Command resetBack(DriveSubsystem drive, String fallbackPathName) {
         return Commands.defer(() -> {
             try {
+                SmartDashboard.putString("Auto/Return Path", fallbackPathName);
                 PathPlannerPath path = PathPlannerPath.fromPathFile(fallbackPathName);
                 Command fallback = Commands.runOnce(() -> SmartDashboard.putString(
                     "Auto/Return Mode", "slow odometry fallback: no usable vision"))
                     .andThen(AutoBuilder.followPath(path)).finallyDo(drive::stopMotors);
                 return Commands.runOnce(() -> SmartDashboard.putString("Auto/Return Mode", "vision-guided reverse"))
                     .andThen(boundedVisionAlign(drive.alignToHopperReturnCommand(
-                        AutoConstants.kHopperApproachMaxSpeedMetersPerSecond), drive::stopMotors,
+                        AutoConstants.kHopperReturnCruiseSpeedMetersPerSecond), drive::stopMotors,
                         AutoConstants.kHopperReturnAlignTimeoutSeconds))
                     .andThen(returnAfterVision(fallback, drive::isHopperTagAligned,
                         drive::wasHopperPoseAcquired, drive::stopMotors));
@@ -137,7 +143,10 @@ public final class Autos {
                 });
             }
         }, Set.of(drive))
-            .beforeStarting(() -> drive.setHopperReturnActive(true))
+            .beforeStarting(() -> {
+                drive.setHopperReturnLeftTrim(hopperReturnLeftTrim(fallbackPathName));
+                drive.setHopperReturnActive(true);
+            })
             .finallyDo(() -> {
                 drive.stopMotors();
                 drive.setHopperReturnActive(false);

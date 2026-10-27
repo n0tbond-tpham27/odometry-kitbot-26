@@ -186,6 +186,8 @@ public final class Constants {
         /** Rotationally corresponding tag on the red hub face. */
         public static final int kRedHopperTagId = 10;
         public static final int kRedHopperCompanionTagId = 9;
+        /** Center-to-center spacing of the two tags on a hub face (14 inches). */
+        public static final double kHopperPairSpacingMeters = 0.3556;
         public static final double kHopperPairMinImageSeparationDegrees = 2.0;
         public static final int kHopperTagAcquireFrames = 3;
         public static final int kHopperTagConfirmFrames = 3;
@@ -360,8 +362,8 @@ public final class Constants {
         public static final double kHopperAlignToleranceMeters = 0.03;
         /** Finish the sideways correction before accepting the final stand-off position. */
         public static final double kHopperAlignLateralToleranceMeters = 0.012;
-        /** Keep zero when matching the hub reference view; no separate lateral offset. */
-        public static final double kHopperReturnLeftTrimMeters = 0.0;
+        /** Center Left returns: shift toward the driver's left from the captured startup position. */
+        public static final double kHopperReturnLeftTrimMeters = 0.20;
         /** Final facing direction and initial turn must be within this angle (radians). */
         public static final double kHopperAlignHeadingToleranceRadians = Math.toRadians(0.5);
         /** Slow corrections near the hopper, using forward or reverse as needed. */
@@ -383,6 +385,10 @@ public final class Constants {
         public static final double kHopperAlignFinalBearingP = 4.0;
         /** Keep the rear-facing camera aimed at the hub throughout the correction arc. */
         public static final double kHopperApproachMaxHeadingRadians = Math.toRadians(30.0);
+        /** Modest cruise increase only while clear of the final hopper approach. */
+        public static final double kHopperReturnCruiseSpeedMetersPerSecond = 0.35;
+        /** Keep room for braking and sideways correction before reaching the hopper. */
+        public static final double kHopperReturnSlowdownDistanceMeters = 0.60;
         public static final double kHopperApproachMaxSpeedMetersPerSecond = 0.25;
         public static final double kHopperApproachBrakingAccelMetersPerSecondSq = 0.6;
         public static final double kHopperApproachStopMarginMeters = 0.02;

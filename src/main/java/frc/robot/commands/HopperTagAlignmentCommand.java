@@ -42,6 +42,7 @@ public final class HopperTagAlignmentCommand extends Command {
         default void reportHopperStartViewTarget(Reference reference) {}
         default void reportHopperViewTarget(HopperViewAlignment.View target, String source) {}
         default void reportHopperViewError(double mainY, double companionY, double headingDegrees) {}
+        default void reportHopperPositionSource(boolean usingTagView, double outwardErrorMeters) {}
         default void onHopperPoseAcquired() {}
     }
 
@@ -56,8 +57,10 @@ public final class HopperTagAlignmentCommand extends Command {
     private final Reference m_startView;
     private final String m_pairName;
     private final HopperViewAlignment.View m_viewTarget;
+    private final HopperViewAlignment.View m_referenceView;
     private final boolean m_matchView;
     private boolean m_usingViewPose;
+    private boolean m_waitingForUsableView;
     private HopperAlignmentController m_controller;
     private Translation2d m_sum;
     private Translation2d m_clusterFirst;
@@ -102,8 +105,9 @@ public final class HopperTagAlignmentCommand extends Command {
         m_referencePose = m_startView != null ? m_startView.startingPose() : goal;
         m_goal = withDriverStationLeftTrim(m_referencePose, leftTrimMeters);
         m_leftTrimMeters = leftTrimMeters;
-        m_matchView = Math.abs(leftTrimMeters) < 1e-9 && (m_startView != null || usePhotoFallback);
-        m_viewTarget = m_startView != null ? HopperViewAlignment.from(m_startView) : HopperViewAlignment.photo();
+        m_matchView = m_startView != null || usePhotoFallback;
+        m_referenceView = m_startView != null ? HopperViewAlignment.from(m_startView) : HopperViewAlignment.photo();
+        m_viewTarget = m_referenceView.shiftedDriverStationLeft(leftTrimMeters);
         m_tagId = tagId;
         m_pairName = Limelight.companionTagId(tagId) + " + " + tagId;
         m_clock = clock;
@@ -122,6 +126,7 @@ public final class HopperTagAlignmentCommand extends Command {
         m_lastOutwardError = Double.NaN;
         m_controller = null;
         m_usingViewPose = false;
+        m_waitingForUsableView = false;
         clearCluster();
         m_confirmations = 0;
         m_finished = false;
@@ -134,7 +139,7 @@ public final class HopperTagAlignmentCommand extends Command {
             m_io.reportHopperLeftTarget(m_leftTrimMeters);
         }
         if (m_matchView) {
-            m_io.reportHopperViewTarget(m_viewTarget, m_startView != null ? "live capture matching hub photo"
+            m_io.reportHopperViewTarget(m_viewTarget, m_startView != null ? "live captured hub view"
                 : "photo estimate using LL4 factory lens");
         }
         m_io.stopMotors();
@@ -176,7 +181,6 @@ public final class HopperTagAlignmentCommand extends Command {
         if (sample.isPresent() && valid(sample.get(), now)) {
             TargetMeasurement measurement = sample.get();
             double previousCapture = m_lastCapture;
-            m_lastCapture = measurement.timestampSeconds();
             // A return trim moves the physical goal, never the measured coordinate frame.
             Pose2d rawPose = measurement.toFieldPose(m_referencePose);
             Rotation2d gyroHeading = m_io.getHeadingAt(measurement.timestampSeconds());
@@ -186,24 +190,36 @@ public final class HopperTagAlignmentCommand extends Command {
                 m_startView.startingPose().getTranslation().plus(rawPose.getTranslation()
                     .minus(m_startView.pairedFieldPose().getTranslation())),
                 gyroHeading);
-            boolean previouslyUsingView = m_usingViewPose;
-            if (m_matchView && (m_usingViewPose
-                    || directPose.getTranslation().getDistance(m_goal.getTranslation()) < 0.25)) {
-                Optional<Pose2d> visual = HopperViewAlignment.estimatePose(measurement, m_viewTarget, m_goal, gyroHeading);
-                if (visual.isPresent()) {
-                    directPose = visual.get();
-                    m_usingViewPose = true;
-                } else {
-                    m_usingViewPose = false;
+            // A biased field solve can keep the robot outside a small distance gate
+            // even while its bumper is at the hub. Use both image bearings as soon
+            // as their bounded, gyro-compensated translation estimate is available.
+            if (m_matchView) {
+                // Keep measuring in the original startup frame. The trim moves only
+                // the destination; it must not shift odometry or disable two-tag feedback.
+                Optional<Pose2d> visual = HopperViewAlignment.estimatePose(measurement, m_referenceView,
+                    m_referencePose, gyroHeading);
+                if (visual.isEmpty()) {
+                    // Never switch back to a differently biased field solve mid-return.
+                    // Keep stopped between camera frames, too, until the pair is usable again.
+                    m_waitingForUsableView = true;
+                    m_confirmations = 0;
+                    clearCluster();
+                    m_io.driveRobotRelative(new ChassisSpeeds());
+                    report("stopped: unusable two-tag geometry; waiting for hopper tags " + m_pairName);
+                    if (m_controller == null && now - m_acquireStarted >= kHopperTagAcquireTimeoutSeconds) {
+                        finish(false, "alignment failed: no usable two-tag geometry for hopper tags " + m_pairName);
+                    }
+                    return;
                 }
+                directPose = visual.get();
+                m_usingViewPose = true;
             }
-            if (m_controller != null && previouslyUsingView != m_usingViewPose) {
-                m_controller = newController();
-                m_controller.reset(directPose);
-            }
+            m_waitingForUsableView = false;
+            m_lastCapture = measurement.timestampSeconds();
             Pose2d error = directPose.relativeTo(m_goal);
             m_lastRight = error.getY();
             m_lastOutwardError = error.getX();
+            m_io.reportHopperPositionSource(m_usingViewPose, error.getX());
             m_io.reportHopperImageError(measurement.imageHorizontalDegrees()
                 - (m_startView == null ? 0.0 : m_startView.imageHorizontalDegrees()));
             m_io.reportHopperCompanionImageError(m_startView == null ? Double.NaN
@@ -257,7 +273,7 @@ public final class HopperTagAlignmentCommand extends Command {
             }
             return;
         }
-        if (now - m_lastCapture > kMaxVisionAgeSeconds) {
+        if (m_waitingForUsableView || now - m_lastCapture > kMaxVisionAgeSeconds) {
             m_io.driveRobotRelative(new ChassisSpeeds());
             report("stopped: waiting for both hopper tags " + m_pairName);
             return;
@@ -297,8 +313,7 @@ public final class HopperTagAlignmentCommand extends Command {
     private HopperAlignmentController newController() {
         return new HopperAlignmentController(m_goal,
             m_usingViewPose ? kHopperViewFinePositionToleranceMeters : kHopperAlignToleranceMeters, m_maxSpeed,
-            m_usingViewPose ? kHopperViewFineStopMarginMeters : kHopperApproachStopMarginMeters,
-            m_usingViewPose ? 4.0 : 2.5);
+            m_usingViewPose ? kHopperViewFineStopMarginMeters : kHopperApproachStopMarginMeters);
     }
 
     /** Move the return goal toward the driver's left, mirrored with the alliance heading. */

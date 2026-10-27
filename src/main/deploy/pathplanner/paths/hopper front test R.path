@@ -8,7 +8,7 @@
       },
       "prevControl": null,
       "nextControl": {
-        "x": 1.8935660091047044,
+        "x": 1.8935660091047046,
         "y": 3.9814054300455224
       },
       "isLocked": false,
@@ -88,7 +88,7 @@
         "y": 0.644398
       },
       "nextControl": {
-        "x": 6.6,
+        "x": 6.55,
         "y": 0.644398
       },
       "isLocked": false,
@@ -100,19 +100,19 @@
         "y": 0.644398
       },
       "prevControl": {
-        "x": 6.45,
+        "x": 6.5,
         "y": 0.644398
       },
       "nextControl": {
         "x": 5.15,
-        "y": 0.644398
+        "y": 0.6443980000000001
       },
       "isLocked": false,
       "linkedName": null
     },
     {
       "anchor": {
-        "x": 2.95,
+        "x": 3.2,
         "y": 0.644398
       },
       "prevControl": {
@@ -120,7 +120,7 @@
         "y": 0.644398
       },
       "nextControl": {
-        "x": 2.6,
+        "x": 2.95,
         "y": 0.644398
       },
       "isLocked": false,
@@ -128,15 +128,15 @@
     },
     {
       "anchor": {
-        "x": 2.6,
+        "x": 3.0,
         "y": 2.7
       },
       "prevControl": {
-        "x": 2.6,
+        "x": 3.0,
         "y": 1.6
       },
       "nextControl": {
-        "x": 2.6,
+        "x": 3.0,
         "y": 3.4
       },
       "isLocked": false,
@@ -144,15 +144,15 @@
     },
     {
       "anchor": {
-        "x": 2.25,
+        "x": 2.75,
         "y": 4.0346376
       },
       "prevControl": {
-        "x": 2.65,
+        "x": 3.0,
         "y": 4.0346376
       },
       "nextControl": {
-        "x": 2.15,
+        "x": 2.5,
         "y": 4.0346376
       },
       "isLocked": false,
@@ -160,11 +160,11 @@
     },
     {
       "anchor": {
-        "x": 1.95,
+        "x": 2.45,
         "y": 4.0346376
       },
       "prevControl": {
-        "x": 2.05,
+        "x": 2.7,
         "y": 4.0346376
       },
       "nextControl": null,
@@ -212,7 +212,7 @@
   },
   "goalEndState": {
     "velocity": 0,
-    "rotation": 0.0
+    "rotation": 180.0
   },
   "reversed": false,
   "folder": null,

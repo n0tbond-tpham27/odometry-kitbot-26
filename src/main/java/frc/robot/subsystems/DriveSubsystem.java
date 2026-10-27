@@ -103,7 +103,9 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     // --- Vision ---
     private final Limelight m_limelight = new Limelight(kLimelightName);
-    private final HopperStartView m_hopperStartView = new HopperStartView(true);
+    // The robot starts centered and square. Capture the actual calibrated camera
+    // view instead of requiring it to match angles estimated from a screenshot.
+    private final HopperStartView m_hopperStartView = new HopperStartView();
     /** Most recent vision position that passed the checks in updateVision()... */
     private Pose2d m_lastAcceptedVisionPose = null;
     /** ...and when it was accepted (FPGA seconds). */
@@ -118,6 +120,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     private boolean m_hopperTagAligned = false;
     private boolean m_hopperPoseAcquired = false;
     private boolean m_hopperReturnActive = false;
+    private double m_hopperReturnLeftTrimMeters;
     /** Gyro heading (radians) at the last encoder reset; the virtual left encoder is measured from here. */
     private double m_headingAtResetRadians = 0.0;
     /** Raw encoder reading at the last reset; subtracted out so distances start from zero. */
@@ -212,6 +215,11 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
         SmartDashboard.putData("Field", m_field);
         // Turn off to see pure wheel odometry, e.g. for the tape-measure calibration tests
         SmartDashboard.putBoolean("Vision/Enabled", true);
+        SmartDashboard.putString("Auto/Return Controller", "two-tag-spacing-v4-left20");
+        SmartDashboard.putNumber("Auto/Return Cruise Speed (mps)", kHopperReturnCruiseSpeedMetersPerSecond);
+        SmartDashboard.putNumber("Auto/Return Final Speed (mps)", kHopperApproachMaxSpeedMetersPerSecond);
+        SmartDashboard.putNumber("Auto/Return Slowdown Distance (m)", kHopperReturnSlowdownDistanceMeters);
+        SmartDashboard.putBoolean("Auto/Return Active", false);
 
         // Compass dials for Elastic/Shuffleboard's Gyro widget, updated every loop by our own code
         // (a generic LiveWindow gyro widget only updates in Test mode, so it looks frozen otherwise).
@@ -661,17 +669,38 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
         if (m_hopperReturnActive) {
             // PathPlanner feedback can request more than a path's nominal velocity limit.
             // Apply the return limits at the drivetrain output for the fallback as well.
+            Pose2d relative = getPose().relativeTo(HopperTagAlignmentCommand.withDriverStationLeftTrim(
+                getHopperCenterPose(), m_hopperReturnLeftTrimMeters));
+            double reverseLimit = relative.getX() <= kHopperReturnSlowdownDistanceMeters
+                    || Math.abs(relative.getY()) > kHopperAlignToleranceMeters
+                ? kHopperApproachMaxSpeedMetersPerSecond : kHopperReturnCruiseSpeedMetersPerSecond;
+            SmartDashboard.putNumber("Auto/Return Speed Limit (mps)", reverseLimit);
+            SmartDashboard.putString("Auto/Return Speed Limit Reason",
+                relative.getX() <= kHopperReturnSlowdownDistanceMeters ? "near hopper"
+                    : Math.abs(relative.getY()) > kHopperAlignToleranceMeters ? "lateral correction" : "cruise");
             speeds = new ChassisSpeeds(
-                MathUtil.clamp(speeds.vxMetersPerSecond, -kHopperApproachMaxSpeedMetersPerSecond,
+                MathUtil.clamp(speeds.vxMetersPerSecond, -reverseLimit,
                     kHopperAlignClearanceSpeedMetersPerSecond), 0.0,
                 MathUtil.clamp(speeds.omegaRadiansPerSecond,
                     -kHopperAlignMaxTurnRateRadPerSec, kHopperAlignMaxTurnRateRadPerSec));
+            SmartDashboard.putNumber("Auto/Return Commanded Forward Speed (mps)", speeds.vxMetersPerSecond);
+            SmartDashboard.putNumber("Auto/Return Measured Forward Speed (mps)", getRobotRelativeSpeeds().vxMetersPerSecond);
         }
         setSpeeds(m_kinematics.toWheelSpeeds(speeds));
     }
 
     public void setHopperReturnActive(boolean active) {
         m_hopperReturnActive = active;
+        SmartDashboard.putBoolean("Auto/Return Active", active);
+        if (!active) {
+            SmartDashboard.putNumber("Auto/Return Commanded Forward Speed (mps)", 0.0);
+        }
+    }
+
+    /** Retain the route's target through the following visionAlign step. */
+    public void setHopperReturnLeftTrim(double meters) {
+        m_hopperReturnLeftTrimMeters = meters;
+        SmartDashboard.putNumber("Auto/Return Left Trim (m)", meters);
     }
 
    
@@ -918,6 +947,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
 
     /** Called at every autonomous enable, including autos that do not capture a hopper view. */
     public void clearHopperStartView() {
+        setHopperReturnLeftTrim(0.0);
         m_trenchPathLocalization.reset(Timer.getFPGATimestamp());
         SmartDashboard.putString("Vision/Trench Status", "waiting for trench tag on autonomous path");
         SmartDashboard.putNumber("Vision/Trench Frames", 0);
@@ -945,7 +975,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
             }
             return new HopperTagAlignmentCommand(this, this, getHopperCenterPose(), tagId,
                 Timer::getFPGATimestamp, () -> SmartDashboard.getBoolean("Vision/Enabled", true), maxSpeed, reference,
-                useStartView ? kHopperReturnLeftTrimMeters : 0.0, useStartView);
+                useStartView ? m_hopperReturnLeftTrimMeters : 0.0, useStartView);
         }, Set.of(this))
             .withName("Align On Hopper Tag");
     }
@@ -1000,6 +1030,7 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
         m_hopperTagAlignmentActive = true;
         m_hopperTagAligned = false;
         m_hopperPoseAcquired = false;
+        SmartDashboard.putString("Vision/Hopper Position Source", "waiting for hopper tags");
         m_limelight.setPriorityTagId(tagId);
         SmartDashboard.putNumber("Vision/Hopper Tag ID", tagId);
         SmartDashboard.putNumber("Vision/Hopper Companion Tag ID", Limelight.companionTagId(tagId));
@@ -1033,6 +1064,13 @@ public class DriveSubsystem extends SubsystemBase implements HopperTagAlignmentC
     @Override
     public void reportHopperCompanionImageError(double degrees) {
         SmartDashboard.putNumber("Vision/Hopper Companion Image Error (deg)", degrees);
+    }
+
+    @Override
+    public void reportHopperPositionSource(boolean usingTagView, double outwardErrorMeters) {
+        SmartDashboard.putString("Vision/Hopper Position Source",
+            usingTagView ? "two-tag image spacing + gyro" : "field pose + gyro");
+        SmartDashboard.putNumber("Vision/Hopper Outward Error (m)", outwardErrorMeters);
     }
 
     @Override

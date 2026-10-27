@@ -2,11 +2,14 @@ package frc.robot.vision;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static frc.robot.Constants.AutoConstants.*;
+import static frc.robot.Constants.VisionConstants.*;
 
 import org.junit.jupiter.api.Test;
 
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Translation2d;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import frc.robot.vision.Limelight.TargetMeasurement;
 
 class HopperViewAlignmentTest {
@@ -24,7 +27,68 @@ class HopperViewAlignmentTest {
         assertEquals(GOAL.getX(), pose.getX(), 1e-9);
         assertEquals(GOAL.getY(), pose.getY(), 1e-9);
         assertEquals(GOAL.getRotation(), pose.getRotation());
-        assertEquals(0, kHopperReturnLeftTrimMeters, "Match the hub photo without a separate left trim");
+        assertTrue(photo.matches(sample, 0.001), "The captured reference stays centered even when the return has a trim");
+    }
+
+    @Test
+    void shiftedPairViewMeansTwentyCentimetersDriverStationLeftOnEitherAlliance() {
+        var reference = HopperViewAlignment.photo();
+        var shifted = reference.shiftedDriverStationLeft(kHopperReturnLeftTrimMeters);
+        var measurement = sample(shifted.mainX(), shifted.companionX(), shifted.mainY(), shifted.companionY());
+        assertFalse(reference.matches(measurement, 1.5));
+        assertTrue(shifted.matches(measurement, 1.5));
+        for (Pose2d goal : new Pose2d[] {GOAL, new Pose2d(13.1, 4.03, Rotation2d.kZero)}) {
+            var pose = HopperViewAlignment.estimatePose(measurement, reference, goal, goal.getRotation()).orElseThrow();
+            var error = pose.relativeTo(goal);
+            assertEquals(0.0, error.getX(), 1e-9);
+            assertEquals(-0.2, error.getY(), 1e-9);
+            assertEquals(goal.getRotation(), pose.getRotation());
+        }
+    }
+
+    @Test
+    void imageTranslationDoesNotInheritBiasedFieldRangeOrLateralPositionOnEitherAlliance() {
+        var photo = HopperViewAlignment.photo();
+        double goalDistance = kHopperPairSpacingMeters
+            / (Math.tan(Math.toRadians(photo.mainX())) - Math.tan(Math.toRadians(photo.companionX())));
+        double goalRight = -goalDistance * Math.tan(Math.toRadians(photo.mainX()));
+        double distance = goalDistance + 0.5;
+        double right = goalRight + 0.2;
+        double yaw = 15;
+        double main = Math.toDegrees(Math.atan(-right / distance)) + yaw;
+        double companion = Math.toDegrees(Math.atan(-(right + kHopperPairSpacingMeters) / distance)) + yaw;
+        for (Pose2d goal : new Pose2d[] {GOAL, new Pose2d(13.1, 4.03, Rotation2d.kZero)}) {
+            Rotation2d gyro = goal.getRotation().plus(Rotation2d.fromDegrees(yaw));
+            for (double bias : new double[] {-0.3, 0.0, 0.4}) {
+                var sample = new TargetMeasurement(26, right + bias, distance + bias, 10, 45,
+                    right + bias, distance + bias, main, companion, true);
+                var pose = HopperViewAlignment.estimatePose(sample, photo, goal, gyro).orElseThrow();
+                Translation2d expected = goal.getTranslation().plus(new Translation2d(0.5, 0.2).rotateBy(goal.getRotation()));
+                assertEquals(expected.getX(), pose.getX(), 1e-9);
+                assertEquals(expected.getY(), pose.getY(), 1e-9);
+                assertEquals(gyro, pose.getRotation());
+            }
+        }
+    }
+
+    @Test
+    void pairSpacingMatchesBothHubFacesInTheOfficialLayout() throws Exception {
+        var layout = new ObjectMapper().readTree(getClass().getResourceAsStream(
+            "/edu/wpi/first/apriltag/2026-rebuilt-welded.json"));
+        for (int[] pair : new int[][] {{26, 25}, {10, 9}}) {
+            com.fasterxml.jackson.databind.JsonNode main = null;
+            com.fasterxml.jackson.databind.JsonNode companion = null;
+            for (var tag : layout.get("tags")) {
+                if (tag.get("ID").asInt() == pair[0]) { main = tag.get("pose").get("translation"); }
+                if (tag.get("ID").asInt() == pair[1]) { companion = tag.get("pose").get("translation"); }
+            }
+            assertNotNull(main);
+            assertNotNull(companion);
+            assertEquals(main.get("x").asDouble(), companion.get("x").asDouble(), 1e-9);
+            assertEquals(main.get("z").asDouble(), companion.get("z").asDouble(), 1e-9);
+            assertEquals(kHopperPairSpacingMeters,
+                Math.abs(main.get("y").asDouble() - companion.get("y").asDouble()), 1e-9);
+        }
     }
 
     @Test

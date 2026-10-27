@@ -92,7 +92,12 @@ public final class HopperAlignmentController {
                     || Math.abs(Math.atan2(relative.getY(), relative.getX())) > kHopperApproachMaxHeadingRadians)) {
             startClearance(relative);
         }
-        if (distance <= m_positionToleranceMeters && Math.abs(relative.getY()) <= kHopperAlignLateralToleranceMeters) {
+        // Once the fine approach finishes, allow the normal position tolerance
+        // during the final gyro turn. Tiny camera-position changes must not alternate
+        // between squaring up and steering toward a bearing only millimeters away.
+        double positionTolerance = m_phase == Phase.FINAL_HEADING
+            ? Math.max(m_positionToleranceMeters, kHopperAlignToleranceMeters) : m_positionToleranceMeters;
+        if (distance <= positionTolerance && Math.abs(relative.getY()) <= kHopperAlignLateralToleranceMeters) {
             m_phase = Phase.FINAL_HEADING;
         } else if (m_phase == Phase.FINAL_HEADING) {
             // A position correction may arrive while turning. Reacquire the center if needed.
@@ -137,16 +142,19 @@ public final class HopperAlignmentController {
         double desiredHeading = MathUtil.clamp(
             (1.0 + kHopperAlignFinalBearingP / kHopperAlignBearingP) * bearing,
             -kHopperApproachMaxHeadingRadians, kHopperApproachMaxHeadingRadians);
-        double turn = kHopperAlignBearingP * MathUtil.angleModulus(
-            desiredHeading - relative.getRotation().getRadians());
+        double steeringError = MathUtil.angleModulus(desiredHeading - relative.getRotation().getRadians());
+        double turn = kHopperAlignBearingP * steeringError;
         double speedLimit = m_maxSpeed;
-        if (relative.getX() < 0.8 || Math.abs(relative.getY()) > kHopperAlignToleranceMeters) {
+        if (relative.getX() <= kHopperReturnSlowdownDistanceMeters
+                || Math.abs(relative.getY()) > kHopperAlignToleranceMeters) {
             speedLimit = Math.min(speedLimit, kHopperApproachMaxSpeedMetersPerSecond);
         }
         speedLimit = Math.min(speedLimit, Math.sqrt(2.0 * kHopperApproachBrakingAccelMetersPerSecondSq
             * Math.max(0.0, relative.getX() - m_positionToleranceMeters / 2.0)));
         double speed = Math.min(speedLimit, kHopperAlignPositionP * distance) * Math.max(0.0, Math.cos(alpha));
-        if (Math.abs(alpha) > Math.toRadians(25.0)) {
+        // Establish the steering heading before backing in. A bearing-only gate can
+        // allow reverse motion while the chassis is still making a large correction.
+        if (Math.abs(alpha) > Math.toRadians(25.0) || Math.abs(steeringError) > Math.toRadians(10.0)) {
             speed = 0.0;
         }
         return new ChassisSpeeds(-speed, 0.0,

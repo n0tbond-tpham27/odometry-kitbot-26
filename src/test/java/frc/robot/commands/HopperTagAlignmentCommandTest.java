@@ -2,6 +2,7 @@ package frc.robot.commands;
 
 import static frc.robot.Constants.AutoConstants.*;
 import static frc.robot.Constants.OdometryConstants.*;
+import static frc.robot.Constants.VisionConstants.kHopperTagAcquireTimeoutSeconds;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.Optional;
@@ -28,15 +29,17 @@ class HopperTagAlignmentCommandTest {
 
     @Test
     void restoresBothTagsToThePhotoWhileTheGyroHoldsHeadingDespiteCameraYawAndPositionBias() {
-        for (double side : new double[] {-0.25, 0.25}) {
-            FakeDrive io = new FakeDrive(new Pose2d(1.95, GOAL.getY() + side,
+        // Exercise both the old long approach and the shortened path handoff, with
+        // drift to either side, wheel lag and a biased camera position/yaw estimate.
+        for (double[] start : new double[][] {{1.95, -0.25}, {1.95, 0.25}, {2.45, -0.25}, {2.45, 0.25}}) {
+            FakeDrive io = new FakeDrive(new Pose2d(start[0], GOAL.getY() + start[1],
                 GOAL.getRotation().plus(Rotation2d.fromDegrees(10))));
             configurePhotoCamera(io);
             io.visionLateralBiasMeters = 0.18;
             io.independentHeadingBiasDegrees = 30;
             io.rightwardDriftPerMeter = 0.10;
             HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
-                () -> io.now, () -> io.enabled, kHopperApproachMaxSpeedMetersPerSecond, null, 0.0, true);
+                () -> io.now, () -> io.enabled, kHopperReturnCruiseSpeedMetersPerSecond, null, 0.0, true);
             command.initialize();
             StringBuilder trace = new StringBuilder();
             for (int step = 0; step < 930 && !command.isFinished(); step++) {
@@ -67,22 +70,175 @@ class HopperTagAlignmentCommandTest {
     }
 
     @Test
+    void bothTagViewCorrectsRightwardMissEvenWhenFieldPositionNeverEntersTheOldFineWindow() {
+        for (double offset : new double[] {-0.25, 0.25}) {
+            FakeDrive io = new FakeDrive(new Pose2d(2.45, GOAL.getY() + offset, GOAL.getRotation()));
+            configurePhotoCamera(io);
+            // The image is accurate but the field solve says the robot is farther away
+            // and left of its actual location. Following that solve alone misses right.
+            io.visionLateralBiasMeters = 0.40;
+            io.visionOutwardBiasMeters = 0.35;
+            io.rightwardDriftPerMeter = 0.10;
+            HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+                () -> io.now, () -> io.enabled, kHopperReturnCruiseSpeedMetersPerSecond, null, 0.0, true);
+            command.initialize();
+            StringBuilder trace = new StringBuilder();
+            for (int step = 0; step < 930 && !command.isFinished(); step++) {
+                command.execute();
+                if (step % 50 == 0) {
+                    trace.append("\n").append(io.now).append(" actual=").append(io.actual)
+                        .append(" odom=").append(io.odometry).append(" vx=").append(io.commanded.vxMetersPerSecond)
+                        .append(" w=").append(io.commanded.omegaRadiansPerSecond).append(" ").append(io.status);
+                }
+                io.step();
+            }
+            assertTrue(io.success, io.status + "; actual=" + io.actual + trace);
+            assertEquals(GOAL.getY(), io.actual.getY(), kHopperAlignLateralToleranceMeters);
+            assertEquals(0, io.actual.getRotation().minus(GOAL.getRotation()).getRadians(),
+                kHopperAlignHeadingToleranceRadians);
+            assertTrue(io.minimumOutward >= kHopperTagStandOffMeters - 0.01,
+                "Biased field range must not send the robot backward through the hopper stand-off");
+            command.end(false);
+        }
+    }
+
+    @Test
+    void shiftedLeftHandoffCorrectsDriftFromEitherSide() throws Exception {
+        var points = new com.fasterxml.jackson.databind.ObjectMapper().readTree(java.nio.file.Path.of(
+            "src/main/deploy/pathplanner/paths/hopper front test L.path").toFile()).get("waypoints");
+        var end = points.get(points.size() - 1);
+        double x = end.get("anchor").get("x").asDouble();
+        double y = end.get("anchor").get("y").asDouble();
+        Rotation2d heading = new Rotation2d(x - end.get("prevControl").get("x").asDouble(),
+            y - end.get("prevControl").get("y").asDouble());
+        for (double drift : new double[] {0.0, -0.35, 0.35}) {
+            FakeDrive io = new FakeDrive(new Pose2d(x, y + drift, heading));
+            configurePhotoCamera(io);
+            io.visionLateralBiasMeters = 0.18;
+            io.rightwardDriftPerMeter = 0.10;
+            HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+                () -> io.now, () -> io.enabled, kHopperReturnCruiseSpeedMetersPerSecond,
+                null, kHopperReturnLeftTrimMeters, true);
+            command.initialize();
+            double minX = io.actual.getX();
+            for (int step = 0; step < 930 && !command.isFinished(); step++) {
+                command.execute();
+                io.step();
+                minX = Math.min(minX, io.actual.getX());
+            }
+            assertTrue(io.success, "drift=" + drift + "; " + io.status + "; actual=" + io.actual);
+            assertEquals(GOAL.getY() + kHopperReturnLeftTrimMeters, io.actual.getY(), kHopperAlignLateralToleranceMeters);
+            assertEquals(0, io.actual.getRotation().minus(GOAL.getRotation()).getRadians(),
+                kHopperAlignHeadingToleranceRadians);
+            assertTrue(minX > 1.3, "Keep the clearance maneuver away from the alliance wall");
+            assertTrue(io.minimumOutward >= kHopperTagStandOffMeters - 0.01);
+            command.end(false);
+        }
+    }
+
+    @Test
+    void unusablePairStopsBetweenFramesWithoutSwitchingToBiasedFieldPoseAndCanRecover() {
+        FakeDrive io = new FakeDrive(GOAL);
+        var reference = captureStartView(io, GOAL, 26);
+        io.actual = new Pose2d(GOAL.getX() - 0.6, GOAL.getY() + 0.15, GOAL.getRotation());
+        io.odometry = GOAL;
+        io.visionLateralBiasMeters = -0.5;
+        var command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+            () -> io.now, () -> io.enabled, kHopperReturnCruiseSpeedMetersPerSecond, reference);
+        command.initialize();
+        for (int i = 0; i < 50 && !io.acquired; i++) {
+            command.execute();
+            io.step();
+        }
+        assertTrue(io.acquired);
+        io.invalidPairGeometry = true;
+        io.now += 0.04;
+        for (int i = 0; i < 12; i++) {
+            command.execute();
+            assertEquals(0.0, io.commanded.vxMetersPerSecond, 1e-9);
+            assertEquals(0.0, io.commanded.omegaRadiansPerSecond, 1e-9);
+            assertFalse(command.isFinished(), "A brief bad frame should pause the return, not abandon it");
+            assertFalse(io.success);
+            io.step();
+        }
+        io.invalidPairGeometry = false;
+        run(command, io);
+        assertTrue(io.success, io.status + "; actual=" + io.actual);
+        assertEquals(GOAL.getY(), io.actual.getY(), kHopperAlignLateralToleranceMeters);
+        command.end(false);
+    }
+
+    @Test
+    void unusablePairCannotAcquireByFallingBackToFieldPose() {
+        FakeDrive io = new FakeDrive(GOAL);
+        var reference = captureStartView(io, GOAL, 26);
+        io.invalidPairGeometry = true;
+        var command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+            () -> io.now, () -> io.enabled, kHopperReturnCruiseSpeedMetersPerSecond, reference);
+        command.initialize();
+        double started = io.now;
+        run(command, io);
+        assertFalse(io.acquired);
+        assertFalse(io.success);
+        assertFalse(io.moved);
+        assertTrue(io.now - started < kHopperTagAcquireTimeoutSeconds + 0.1);
+        command.end(false);
+    }
+
+    @Test
+    void fasterReturnSavesTimeWhileSlowingNearTheHubAndPreservingStandOff() {
+        double slowTime = 0.0;
+        for (double limit : new double[] {kHopperApproachMaxSpeedMetersPerSecond,
+                kHopperReturnCruiseSpeedMetersPerSecond}) {
+            FakeDrive io = new FakeDrive(new Pose2d(2.45, GOAL.getY(), GOAL.getRotation()));
+            configurePhotoCamera(io);
+            HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
+                () -> io.now, () -> io.enabled, limit, null, 0.0, true);
+            double startTime = io.now;
+            command.initialize();
+            for (int step = 0; step < 930 && !command.isFinished(); step++) {
+                command.execute();
+                if (GOAL.getX() - io.actual.getX() < kHopperReturnSlowdownDistanceMeters - 0.05) {
+                    assertTrue(io.commanded.vxMetersPerSecond >= -kHopperApproachMaxSpeedMetersPerSecond - 1e-9,
+                        "Final approach must retain the slow speed even with cruise enabled");
+                }
+                io.step();
+            }
+            assertTrue(io.success, io.status);
+            assertTrue(io.minimumOutward >= kHopperTagStandOffMeters - 0.01,
+                "Faster cruise must still brake before backing into the hopper");
+            double elapsed = io.now - startTime;
+            if (limit == kHopperApproachMaxSpeedMetersPerSecond) {
+                slowTime = elapsed;
+            } else {
+                assertTrue(io.peakReverseSpeed > kHopperApproachMaxSpeedMetersPerSecond + 0.05);
+                assertTrue(io.peakReverseSpeed <= kHopperReturnCruiseSpeedMetersPerSecond + 1e-9);
+                assertTrue(elapsed < slowTime - 0.20, "Cruise should shorten the return without speeding up docking");
+            }
+            command.end(false);
+        }
+    }
+
+    @Test
     void returnTrimPhysicallyMovesLeftFromEitherSideWithoutAccumulatingAcrossCycles() {
         FakeDrive io = new FakeDrive(GOAL);
         io.cameraOffsetRobot = new Translation2d(-0.20, 0.08);
         io.visionLateralBiasMeters = 0.18;
         var reference = captureStartView(io, GOAL, 26);
+        // A changed field-solve bias must not disable image feedback when a trim is set.
+        io.visionLateralBiasMeters = 0.0;
+        io.visionOutwardBiasMeters = 0.3;
         for (double offset : new double[] {-0.25, 0.25}) {
-            io.actual = new Pose2d(1.95, GOAL.getY() + offset, GOAL.getRotation());
+            io.actual = new Pose2d(1.95, GOAL.getY() + 0.2 + offset, GOAL.getRotation());
             io.odometry = GOAL;
             io.rightwardDriftPerMeter = 0.14;
             HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
                 () -> io.now, () -> io.enabled, kHopperApproachMaxSpeedMetersPerSecond,
-                reference, 0.10);
+                reference, kHopperReturnLeftTrimMeters);
             command.initialize();
             run(command, io);
             assertTrue(io.success, io.status + "; actual=" + io.actual);
-            assertEquals(GOAL.getY() + 0.10, io.actual.getY(),
+            assertEquals(GOAL.getY() + 0.20, io.actual.getY(),
                 kHopperAlignLateralToleranceMeters);
             assertEquals(GOAL.getX(), io.actual.getX(), kHopperAlignToleranceMeters);
             assertEquals(GOAL, reference.startingPose(), "The known starting placement stays centered");
@@ -412,8 +568,18 @@ class HopperTagAlignmentCommandTest {
             HopperTagAlignmentCommand command = new HopperTagAlignmentCommand(io, io, GOAL, 26,
                 () -> io.now, () -> io.enabled, kHopperApproachMaxSpeedMetersPerSecond, reference);
             command.initialize();
-            run(command, io);
-            assertTrue(io.success, io.status + "; actual=" + io.actual + "; image=" + io.imageAngleDegrees());
+            StringBuilder trace = new StringBuilder();
+            for (int step = 0; step < 930 && !command.isFinished(); step++) {
+                command.execute();
+                if (step % 50 == 0) {
+                    trace.append("\n").append(io.now).append(" actual=").append(io.actual)
+                        .append(" error=").append(io.odometry.relativeTo(GOAL))
+                        .append(" vx=").append(io.commanded.vxMetersPerSecond)
+                        .append(" w=").append(io.commanded.omegaRadiansPerSecond).append(" ").append(io.status);
+                }
+                io.step();
+            }
+            assertTrue(io.success, io.status + "; actual=" + io.actual + "; image=" + io.imageAngleDegrees() + trace);
             assertEquals(GOAL.getX(), io.actual.getX(), kHopperAlignToleranceMeters);
             assertEquals(GOAL.getY(), io.actual.getY(), kHopperAlignToleranceMeters);
             assertEquals(reference.imageHorizontalDegrees(), io.imageAngleDegrees(), 1.5);
@@ -562,6 +728,7 @@ class HopperTagAlignmentCommandTest {
         double cameraYawOffsetRadians;
         boolean imageAvailable = true;
         boolean companionAvailable = true;
+        boolean invalidPairGeometry;
         boolean fullView;
         String status = "";
 
@@ -635,7 +802,7 @@ class HopperTagAlignmentCommandTest {
             }
             lastFrame = now;
             double imageAngle = imageAngleDegrees();
-            double companionAngle = companionImageAngleDegrees();
+            double companionAngle = invalidPairGeometry ? imageAngle - 0.1 : companionImageAngleDegrees();
             boolean pair = imageAvailable && companionAvailable
                 && Math.abs(imageAngle) < 70 && Math.abs(companionAngle) < 70;
             Pose2d relative = new Pose2d(actual.getX(), actual.getY() + visionLateralBiasMeters,

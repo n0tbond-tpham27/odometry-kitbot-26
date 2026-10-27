@@ -2,6 +2,7 @@ package frc.robot.commands;
 
 import static frc.robot.Constants.OdometryConstants.*;
 import static frc.robot.Constants.VisionConstants.*;
+import static frc.robot.Constants.AutoConstants.kHopperReturnLeftTrimMeters;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Path;
@@ -18,11 +19,13 @@ class AutonomousGeometryTest {
     @Test
     void allLinkedHopperAndReturnWaypointsMatchTheCenteredPlacement() throws Exception {
         for (String suffix : new String[] {"", " 2x", " 3x"}) {
-            JsonNode reset = path("reset back" + suffix).get("waypoints");
-            JsonNode returnStart = reset.get(0).get("anchor");
-            JsonNode returnEnd = reset.get(reset.size() - 1).get("anchor");
-            assertHopperCenter(returnEnd);
             for (String route : new String[] {"hopper front test L", "hopper front test R"}) {
+                JsonNode reset = path((route.endsWith("L") ? "reset back L" : "reset back") + suffix).get("waypoints");
+                JsonNode returnStart = reset.get(0).get("anchor");
+                JsonNode returnEnd = reset.get(reset.size() - 1).get("anchor");
+                assertEquals(kHopperCenterXMeters, returnEnd.get("x").asDouble(), 1e-9);
+                assertEquals(kHopperCenterYMeters + (route.endsWith("L") ? kHopperReturnLeftTrimMeters : 0),
+                    returnEnd.get("y").asDouble(), 1e-9);
                 JsonNode points = path(route + suffix).get("waypoints");
                 assertHopperCenter(points.get(0).get("anchor"));
                 JsonNode end = points.get(points.size() - 1).get("anchor");
@@ -76,6 +79,12 @@ class AutonomousGeometryTest {
 
     @Test
     void returnsStayStraightThroughTheTrenchThenTurnOnlyAfterClearingIt() throws Exception {
+        JsonNode settings = json.readTree(deploy.resolve("settings.json").toFile());
+        double bumperSweepRadius = Math.hypot(settings.get("robotWidth").asDouble(),
+            settings.get("robotLength").asDouble()) / 2.0;
+        // Conservatively bound every bumper corner at every turn angle. The hub tag
+        // face is slightly closer than the trench's alliance-side edge.
+        double maxTurnX = kHopperTagFaceXMeters - bumperSweepRadius - 0.15;
         for (String suffix : new String[] {"", " 2x", " 3x"}) {
             for (String route : new String[] {"hopper front test L", "hopper front test R"}) {
                 JsonNode points = path(route + suffix).get("waypoints");
@@ -83,7 +92,7 @@ class AutonomousGeometryTest {
                 JsonNode exit = points.get(7);
                 double laneY = entry.get("anchor").get("y").asDouble();
                 assertTrue(entry.get("anchor").get("x").asDouble() >= 6.25);
-                assertTrue(exit.get("anchor").get("x").asDouble() <= 2.95);
+                assertTrue(exit.get("anchor").get("x").asDouble() <= maxTurnX);
                 assertEquals(laneY, entry.get("nextControl").get("y").asDouble(), 1e-9);
                 assertEquals(laneY, exit.get("prevControl").get("y").asDouble(), 1e-9);
                 assertEquals(laneY, exit.get("anchor").get("y").asDouble(), 1e-9,
@@ -91,20 +100,49 @@ class AutonomousGeometryTest {
                 // Everything after the straight exit remains on the alliance side, so a
                 // wide return turn cannot sweep back toward the trench structure.
                 for (int i = 7; i < points.size() - 1; i++) {
-                    assertTrue(points.get(i).get("anchor").get("x").asDouble() <= 2.95);
-                    assertTrue(points.get(i).get("nextControl").get("x").asDouble() <= 2.95);
-                    assertTrue(points.get(i + 1).get("prevControl").get("x").asDouble() <= 2.95);
-                    assertTrue(points.get(i + 1).get("anchor").get("x").asDouble() <= 2.95);
+                    assertTrue(points.get(i).get("anchor").get("x").asDouble() <= maxTurnX);
+                    assertTrue(points.get(i).get("nextControl").get("x").asDouble() <= maxTurnX);
+                    assertTrue(points.get(i + 1).get("prevControl").get("x").asDouble() <= maxTurnX);
+                    assertTrue(points.get(i + 1).get("anchor").get("x").asDouble() <= maxTurnX);
                 }
                 JsonNode approach = points.get(points.size() - 2);
                 JsonNode end = points.get(points.size() - 1);
-                assertEquals(1.95, end.get("anchor").get("x").asDouble(), 1e-9);
-                assertEquals(kHopperCenterYMeters, approach.get("anchor").get("y").asDouble(), 1e-9);
-                assertEquals(kHopperCenterYMeters, approach.get("nextControl").get("y").asDouble(), 1e-9);
-                assertEquals(kHopperCenterYMeters, end.get("prevControl").get("y").asDouble(), 1e-9);
+                boolean left = route.endsWith("L");
+                double expectedX = left ? 2.8487018544935796 : 2.45;
+                double expectedY = kHopperCenterYMeters + (left ? kHopperReturnLeftTrimMeters : 0);
+                assertEquals(expectedX, end.get("anchor").get("x").asDouble(), 1e-9);
+                assertEquals(expectedY, end.get("anchor").get("y").asDouble(), 1e-9);
+                double reverseDistance = kHopperCenterXMeters - end.get("anchor").get("x").asDouble();
+                assertTrue(reverseDistance > (left ? 0.5 : 0.9) && reverseDistance < (left ? 0.65 : 1.0),
+                    "Leave correction room without the previous 1.48 m overshoot");
+                assertEquals(expectedY, approach.get("anchor").get("y").asDouble(), 1e-9);
+                assertEquals(expectedY, approach.get("nextControl").get("y").asDouble(), 1e-9);
+                assertEquals(expectedY, end.get("prevControl").get("y").asDouble(), 1e-9);
                 assertTrue(approach.get("anchor").get("x").asDouble()
-                    - end.get("anchor").get("x").asDouble() >= 0.30 - 1e-9,
+                    - end.get("anchor").get("x").asDouble() >= (left ? 0.15 : 0.30) - 1e-9,
                     "Finish the turn before the straight handoff to reverse alignment");
+            }
+        }
+    }
+
+    @Test
+    void shortenedRoutesKeepAllEventsAndConstraintZonesWithinTheirWaypoints() throws Exception {
+        for (String side : new String[] {"L", "R"}) {
+            for (String suffix : new String[] {"", " 2x", " 3x"}) {
+                JsonNode route = path("hopper front test " + side + suffix);
+                int last = route.get("waypoints").size() - 1;
+                for (JsonNode zone : route.get("constraintZones")) {
+                    assertTrue(zone.get("minWaypointRelativePos").asDouble() >= 0);
+                    assertTrue(zone.get("maxWaypointRelativePos").asDouble() <= last);
+                }
+                for (JsonNode event : route.get("eventMarkers")) {
+                    assertTrue(event.get("waypointRelativePos").asDouble() >= 0);
+                    assertTrue(event.get("waypointRelativePos").asDouble() <= last);
+                    if (event.hasNonNull("endWaypointRelativePos")) {
+                        assertTrue(event.get("endWaypointRelativePos").asDouble() <= last,
+                            "An intake zone must end before the shortened path ends");
+                    }
+                }
             }
         }
     }

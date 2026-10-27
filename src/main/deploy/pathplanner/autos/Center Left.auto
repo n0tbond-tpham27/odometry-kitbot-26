@@ -37,7 +37,7 @@
         {
           "type": "named",
           "data": {
-            "name": "resetBack"
+            "name": "resetBackL"
           }
         },
         {
@@ -61,7 +61,7 @@
         {
           "type": "path",
           "data": {
-            "pathName": "hopper front test L"
+            "pathName": "hopper front test L repeat"
           }
         },
         {
@@ -73,7 +73,7 @@
         {
           "type": "named",
           "data": {
-            "name": "resetBack"
+            "name": "resetBackL"
           }
         },
         {

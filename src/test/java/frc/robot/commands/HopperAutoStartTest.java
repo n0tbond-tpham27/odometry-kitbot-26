@@ -35,7 +35,7 @@ class HopperAutoStartTest {
     private static boolean shooting;
     private static int visionAttempts;
     private static int pathOutputs;
-    private static final HopperStartView START_VIEW = new HopperStartView(true);
+    private static final HopperStartView START_VIEW = new HopperStartView();
 
     @BeforeAll
     static void configureRealPathPlannerWithStationaryDrive() throws Exception {
@@ -51,7 +51,8 @@ class HopperAutoStartTest {
         // Pause at the first shot so no later path or return command can hide a startup error.
         NamedCommands.registerCommand("shoot", Commands.run(() -> shooting = true));
         NamedCommands.registerCommand("visionAlign", Commands.runOnce(() -> visionAttempts++));
-        for (String name : new String[] {"intake", "postTrenchRelocalize", "resetBack", "resetBack2x", "resetBack3x"}) {
+        for (String name : new String[] {"intake", "postTrenchRelocalize", "resetBack", "resetBack2x", "resetBack3x",
+                "resetBackL", "resetBackL2x", "resetBackL3x"}) {
             NamedCommands.registerCommand(name, Commands.none());
         }
     }

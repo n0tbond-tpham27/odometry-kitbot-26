@@ -36,7 +36,7 @@ class HopperStartViewTest {
     }
 
     @Test
-    void productionCaptureRefinesThePhotoInsteadOfLearningAnUnrelatedStartingView() {
+    void optionalPhotoGateRequiresMatchingTheEstimatedPhoto() {
         var view = new HopperStartView(true);
         view.reset(26, START, 10);
         for (int i = 1; i <= 4; i++) {

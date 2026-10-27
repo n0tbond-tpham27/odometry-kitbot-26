@@ -14,6 +14,15 @@ import frc.robot.vision.Limelight.TargetMeasurement;
 /** Both tag bearings determine translation; the gyro independently determines rotation. */
 public final class HopperViewAlignment {
     public record View(double mainX, double companionX, double mainY, double companionY) {
+        /** Expected pair bearings after a lateral move with the same distance and gyro heading. */
+        public View shiftedDriverStationLeft(double meters) {
+            double main = Math.tan(Math.toRadians(mainX));
+            double companion = Math.tan(Math.toRadians(companionX));
+            double distance = kHopperPairSpacingMeters / (main - companion);
+            return new View(Math.toDegrees(Math.atan(main + meters / distance)),
+                Math.toDegrees(Math.atan(companion + meters / distance)), mainY, companionY);
+        }
+
         public boolean matches(TargetMeasurement sample, double toleranceDegrees) {
             return Math.abs(sample.imageHorizontalDegrees() - mainX) <= toleranceDegrees
                 && Math.abs(sample.companionImageHorizontalDegrees() - companionX) <= toleranceDegrees
@@ -60,9 +69,7 @@ public final class HopperViewAlignment {
     public static Optional<Pose2d> estimatePose(TargetMeasurement sample, View target,
             Pose2d desiredPose, Rotation2d gyroHeading) {
         double yaw = MathUtil.angleModulus(gyroHeading.minus(desiredPose.getRotation()).getRadians());
-        double distance = sample.cameraOutwardMeters();
-        if (!sample.hasHopperPair() || !Double.isFinite(distance) || distance <= 0.1
-                || !Double.isFinite(yaw) || Math.abs(yaw) > Math.toRadians(35.0)) {
+        if (!sample.hasHopperPair() || !Double.isFinite(yaw) || Math.abs(yaw) > Math.toRadians(35.0)) {
             return Optional.empty();
         }
         double main = Math.tan(Math.toRadians(sample.imageHorizontalDegrees()) - yaw);
@@ -75,7 +82,16 @@ public final class HopperViewAlignment {
         if (!Double.isFinite(ratio) || span <= 0.02 || targetSpan <= 0.02 || ratio < 0.15 || ratio > 2.0) {
             return Optional.empty();
         }
-        double desiredDistance = distance * ratio;
+        // Solve distance from the actual pair spacing, independently of MegaTag's
+        // field position/range. Scaling image error by that field range reintroduces
+        // its bias and can create false lateral error while the robot turns.
+        double distance = kHopperPairSpacingMeters / span;
+        double desiredDistance = kHopperPairSpacingMeters / targetSpan;
+        if (distance <= 0.1 || distance > kHopperTagMaxRangeMeters
+                || !Double.isFinite(sample.cameraOutwardMeters()) || !Double.isFinite(sample.outwardMeters())
+                || !Double.isFinite(sample.cameraRightMeters()) || !Double.isFinite(sample.rightMeters())) {
+            return Optional.empty();
+        }
         double outwardError = distance - desiredDistance;
         double rightError = -distance * main + desiredDistance * targetMain;
         // An off-center camera moves around the gyro's rotation center during a turn.

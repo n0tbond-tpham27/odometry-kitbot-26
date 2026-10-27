@@ -71,6 +71,9 @@ public class RobotContainer {
         NamedCommands.registerCommand("resetBack", Autos.resetBack(m_driveSubsystem, "reset back"));
         NamedCommands.registerCommand("resetBack2x", Autos.resetBack(m_driveSubsystem, "reset back 2x"));
         NamedCommands.registerCommand("resetBack3x", Autos.resetBack(m_driveSubsystem, "reset back 3x"));
+        NamedCommands.registerCommand("resetBackL", Autos.resetBack(m_driveSubsystem, "reset back L"));
+        NamedCommands.registerCommand("resetBackL2x", Autos.resetBack(m_driveSubsystem, "reset back L 2x"));
+        NamedCommands.registerCommand("resetBackL3x", Autos.resetBack(m_driveSubsystem, "reset back L 3x"));
 
         // Lists every auto in deploy/pathplanner/autos, plus our non-PathPlanner routine
         m_autoChooser = AutoBuilder.buildAutoChooser();
@@ -178,7 +181,9 @@ public class RobotContainer {
      */
     public Command getAutonomousCommand() {
         m_driveSubsystem.clearHopperStartView();
-        return m_autoChooser.getSelected();
+        Command selected = m_autoChooser.getSelected();
+        SmartDashboard.putString("Auto/Running Selection", selected == null ? "none" : selected.getName());
+        return selected;
     }
     
 }

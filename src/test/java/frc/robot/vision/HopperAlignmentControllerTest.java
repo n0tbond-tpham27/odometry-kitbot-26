@@ -53,6 +53,21 @@ class HopperAlignmentControllerTest {
     }
 
     @Test
+    void establishesSteeringHeadingBeforeReversingFromEitherSide() {
+        for (double heading : new double[] {-20, 20}) {
+            HopperAlignmentController controller = new HopperAlignmentController(TARGET);
+            Pose2d start = new Pose2d(TARGET.getX() - 0.5, TARGET.getY(),
+                TARGET.getRotation().plus(Rotation2d.fromDegrees(heading)));
+            controller.reset(start);
+            ChassisSpeeds output = controller.calculate(start, new ChassisSpeeds());
+            assertEquals(0.0, output.vxMetersPerSecond, 1e-9,
+                "Do not back toward the hub while making a large heading correction");
+            assertTrue(output.omegaRadiansPerSecond * heading < 0);
+            runToGoal(controller, start, TARGET);
+        }
+    }
+
+    @Test
     void reacquiresPositionIfVisionChangesDuringFinalTurn() {
         HopperAlignmentController controller = new HopperAlignmentController(TARGET);
         Pose2d centered = new Pose2d(TARGET.getTranslation(), Rotation2d.fromDegrees(140));
@@ -60,6 +75,21 @@ class HopperAlignmentControllerTest {
         controller.calculate(centered, new ChassisSpeeds());
         runToGoal(controller, new Pose2d(TARGET.getX() - 0.25, TARGET.getY() + 0.3,
             centered.getRotation()), TARGET);
+    }
+
+    @Test
+    void fineApproachKeepsSquaringUpThroughSmallCameraPositionChanges() {
+        HopperAlignmentController controller = new HopperAlignmentController(TARGET, 0.01, 0.25, 0.005);
+        Rotation2d heading = TARGET.getRotation().plus(Rotation2d.fromDegrees(7));
+        Pose2d start = new Pose2d(TARGET.getX() - 0.009, TARGET.getY() - 0.003, heading);
+        controller.reset(start);
+        assertTrue(controller.calculate(start, new ChassisSpeeds()).omegaRadiansPerSecond < 0);
+        Pose2d shifted = new Pose2d(TARGET.getX() - 0.014, TARGET.getY() - 0.003, heading);
+        ChassisSpeeds output = controller.calculate(shifted, new ChassisSpeeds());
+        assertEquals(0.0, output.vxMetersPerSecond, 1e-9);
+        assertTrue(output.omegaRadiansPerSecond < 0,
+            "Keep turning toward the gyro target, not away toward a tiny residual bearing");
+        assertFalse(controller.isFinished());
     }
 
     @Test
